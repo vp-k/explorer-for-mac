@@ -22,6 +22,8 @@ public enum SizeFormatter {
         let formatter = NumberFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = true
+        formatter.groupingSize = 3
         formatter.maximumFractionDigits = 0
         return "\(formatter.string(from: NSNumber(value: kilobytes)) ?? String(kilobytes)) KB"
     }
@@ -42,6 +44,7 @@ public enum SizeFormatter {
 public enum WildcardMatcher {
     /// 검색어 매칭. "*", "?" 와일드카드 지원, 없으면 대소문자 무시 부분 일치.
     public static func matches(_ name: String, pattern: String) -> Bool {
+        guard !pattern.isEmpty else { return true }
         let pattern = pattern.lowercased()
         let name = name.lowercased()
         guard pattern.contains("*") || pattern.contains("?") else { return name.contains(pattern) }
@@ -139,7 +142,11 @@ public enum FolderSizeCalculator {
                     at: url, includingPropertiesForKeys: nil, errorHandler: { _, _ in true }
                   ) else { continue }
             while !isCancelled(), let child = enumerator.nextObject() as? URL {
-                if !include(child, isRoot: false) { enumerator.skipDescendants() }
+                // Calling skipDescendants on a file can skip the next directory's contents on macOS.
+                if !include(child, isRoot: false),
+                   (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                    enumerator.skipDescendants()
+                }
             }
         }
         return result
