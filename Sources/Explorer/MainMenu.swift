@@ -64,6 +64,7 @@ enum MainMenu {
         add(menu, "새 탭", #selector(AppDelegate.newTab(_:)), "t")
         add(menu, "새 폴더", #selector(B.newFolder(_:)), "n", [.command, .shift])
         add(menu, "새 텍스트 문서", #selector(B.newTextFile(_:)))
+        add(menu, "복제", #selector(B.duplicateSelection(_:)), "d")
         menu.addItem(.separator())
         add(menu, "열기", #selector(B.openSelection(_:)), key(NSDownArrowFunctionKey))
         add(menu, "새 탭에서 열기", #selector(B.openInNewTab(_:)))

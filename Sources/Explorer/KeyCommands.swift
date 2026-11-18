@@ -62,8 +62,8 @@ enum GlobalKeyHandler {
             return nil
         }
 
-        // 기능 키는 수정 키 없이 눌렀을 때만.
-        if flags.isEmpty, let browser {
+        // 기능 키는 수정 키 없이, 글자 입력 중이 아닐 때만. 이름 편집 중 F5 가 입력을 버리지 않게 한다.
+        if flags.isEmpty, let browser, !editing {
             switch event.keyCode {
             case Key.f3: browser.focusSearch(nil); return nil
             case Key.f4: browser.focusAddressBar(nil); return nil

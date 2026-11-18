@@ -32,6 +32,12 @@ final class BrowserViewController: NSViewController {
     private var search: FileSearch?
     private var watcher: DirectoryWatcher?
     private var loadGeneration = 0
+    /// 목록에 내용이 표시된 폴더(Location.key). 검색 결과나 다른 폴더를 보이는 중이면 현재 위치와 다르다.
+    private var listedLocation: String?
+    /// 화면에 아직 넣지 않은 검색 결과. 몇 묶음씩 모아서 백그라운드에서 정렬한다 (M8).
+    private var pendingResults: [FileItem] = []
+    private var searchFlushScheduled = false
+    private var searchSortRunning = false
     private var didLayoutSplit = false
 
     // 화면 요소
@@ -152,6 +158,7 @@ final class BrowserViewController: NSViewController {
         center.addObserver(self, selector: #selector(clipboardDidChange(_:)), name: AppState.clipboardChanged, object: nil)
         center.addObserver(self, selector: #selector(pinsDidChange(_:)), name: AppState.pinsChanged, object: nil)
         center.addObserver(self, selector: #selector(volumesDidChange(_:)), name: AppState.volumesChanged, object: nil)
+        center.addObserver(self, selector: #selector(filesDidChange(_:)), name: AppState.filesChanged, object: nil)
 
         didChangeLocation(selecting: [])
     }
@@ -204,11 +211,17 @@ final class BrowserViewController: NSViewController {
         didChangeLocation(selecting: [from])
     }
 
-    /// 루트에서 위로 가면 Windows 의 "내 PC" 처럼 내 Mac 화면으로 간다.
+    /// 검색 중이면 검색을 끝낸다. 루트("/")와 내 Mac 에서는 더 올라가지 않는다 (N2).
+    var canGoUp: Bool {
+        guard !isThisMac else { return false }
+        return isSearching || AddressResolver.parent(of: currentURL) != nil
+    }
+
     @objc func goUp(_ sender: Any?) {
-        guard !isThisMac else { return }
+        guard canGoUp else { return }
         if isSearching { endSearch(); return }
-        navigate(to: AddressResolver.parent(of: currentURL) ?? Location.thisMac)
+        guard let parent = AddressResolver.parent(of: currentURL) else { return }
+        navigate(to: parent)
     }
 
     @objc func goToFolder(_ sender: Any?) {
@@ -264,6 +277,7 @@ final class BrowserViewController: NSViewController {
     @objc func refresh(_ sender: Any?) {
         IconCache.shared.invalidate()
         if isThisMac { thisMacView.reload() }
+        navPane.refreshTree(nil)
         reload()
     }
 
@@ -276,9 +290,22 @@ final class BrowserViewController: NSViewController {
             thisMacView.isHidden = false
             fileList.containerView.isHidden = true
             rawItems = []
+            listedLocation = nil
             fileList.setItems([], selecting: [])
             updateStatus()
             return
+        }
+        // 다른 위치로 왔으면 새 목록을 읽기 전에 이전 목록과 선택을 비운다.
+        // 그래야 느린 폴더를 읽는 동안 삭제·잘라내기 같은 명령이 이전 폴더 항목에 가지 않는다 (H3).
+        let key = Location.key(currentURL)
+        if listedLocation != key {
+            listedLocation = nil
+            rawItems = []
+            fileList.setItems([], selecting: [])
+            fileList.showMessage(nil)
+            statusBar.setActivity("불러오는 중…")
+            updateStatus()
+            updateCommandState()
         }
         thisMacView.isHidden = true
         fileList.containerView.isHidden = false
@@ -291,6 +318,8 @@ final class BrowserViewController: NSViewController {
                 Result { try DirectoryLister.contents(of: url, showHidden: showHidden) }
             }.value
             guard let self, generation == self.loadGeneration else { return }
+            self.listedLocation = key
+            self.statusBar.setActivity(nil)
             switch result {
             case .success(let items):
                 self.rawItems = items
@@ -311,6 +340,7 @@ final class BrowserViewController: NSViewController {
     private func directoryDidChange() {
         guard !isSearching, !fileList.isRenaming else { return }
         IconCache.shared.invalidate()
+        navPane.refreshTree([currentURL])
         reload()
     }
 
@@ -340,6 +370,8 @@ final class BrowserViewController: NSViewController {
         let generation = loadGeneration
         searchQuery = query
         rawItems = []
+        pendingResults = []
+        listedLocation = nil
         fileList.showsFolderColumn = true
         applyItems(selecting: [])
         fileList.showMessage(nil)
@@ -362,15 +394,62 @@ final class BrowserViewController: NSViewController {
         }
     }
 
+    /// 검색 결과 묶음은 바로 그리지 않고 모아 둔다. 0.3초마다 한 번, 정렬은 백그라운드에서 한다.
     private func appendSearchResults(_ batch: [FileItem], generation: Int) {
         guard generation == loadGeneration, isSearching else { return }
-        rawItems.append(contentsOf: batch)
-        applyItems(selecting: fileList.selectedURLs)
-        statusBar.setActivity("검색 중… \(rawItems.count)개 찾음")
+        pendingResults.append(contentsOf: batch)
+        statusBar.setActivity("검색 중… \(rawItems.count + pendingResults.count)개 찾음")
+        guard !searchFlushScheduled else { return }
+        searchFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.searchFlushScheduled = false
+                self?.flushSearchResults(generation: generation, finished: false)
+            }
+        }
+    }
+
+    /// 모아 둔 결과를 합쳐 백그라운드에서 정렬하고 화면에 넣는다. 정렬 중에 온 결과는 끝난 뒤 다시 합친다.
+    private func flushSearchResults(generation: Int, finished: Bool) {
+        guard generation == loadGeneration, isSearching, !searchSortRunning else { return }
+        guard !pendingResults.isEmpty else {
+            if finished { finishSearchDisplay() }
+            return
+        }
+        let combined = rawItems + pendingResults
+        pendingResults = []
+        searchSortRunning = true
+        let order = sortOrder
+        Task { [weak self] in
+            let sorted = await Task.detached(priority: .userInitiated) { FileSorter.sorted(combined, by: order) }.value
+            guard let self else { return }
+            self.searchSortRunning = false
+            guard generation == self.loadGeneration, self.isSearching else { return }
+            self.rawItems = combined
+            if order == self.sortOrder {
+                self.fileList.setItems(sorted, selecting: self.fileList.selectedURLs)
+                self.updateStatus()
+            } else {
+                self.applyItems(selecting: self.fileList.selectedURLs)
+            }
+            let done = self.search == nil
+            if !self.pendingResults.isEmpty || done {
+                self.flushSearchResults(generation: generation, finished: done)
+            }
+        }
     }
 
     private func searchDidFinish(generation: Int) {
         guard generation == loadGeneration, isSearching else { return }
+        search = nil
+        if pendingResults.isEmpty && !searchSortRunning {
+            finishSearchDisplay()
+        } else {
+            flushSearchResults(generation: generation, finished: true)
+        }
+    }
+
+    private func finishSearchDisplay() {
         statusBar.setActivity(nil)
         fileList.showMessage(rawItems.isEmpty ? "검색 조건과 일치하는 항목이 없습니다." : nil)
     }
@@ -385,6 +464,8 @@ final class BrowserViewController: NSViewController {
     private func cancelSearch(clearField: Bool) {
         search?.cancel()
         search = nil
+        pendingResults = []
+        if searchQuery != nil { listedLocation = nil }
         searchQuery = nil
         fileList.showsFolderColumn = false
         statusBar.setActivity(nil)
@@ -396,7 +477,7 @@ final class BrowserViewController: NSViewController {
     func updateChrome() {
         backButton.isEnabled = history.canGoBack
         forwardButton.isEnabled = history.canGoForward
-        upButton.isEnabled = !isThisMac
+        upButton.isEnabled = canGoUp
         searchField.isEnabled = !isThisMac
 
         let title: String
@@ -475,6 +556,11 @@ final class BrowserViewController: NSViewController {
     @objc private func clipboardDidChange(_ note: Notification) {
         fileList.refreshItemAppearance()
         updateCommandState()
+    }
+
+    /// 이 창이나 다른 창의 파일 작업이 끝났다. 탐색 창 트리의 해당 폴더를 다시 읽는다 (M7).
+    @objc private func filesDidChange(_ note: Notification) {
+        navPane.refreshTree(note.userInfo?["folders"] as? [URL])
     }
 
     @objc private func pinsDidChange(_ note: Notification) {

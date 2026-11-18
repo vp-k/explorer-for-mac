@@ -27,7 +27,7 @@ final class FileListController: NSObject {
     private let messageLabel = UI.label("", color: .secondaryLabelColor)
 
     private(set) var items: [FileItem] = []
-    var mode: ViewMode = .details { didSet { if oldValue != mode { applyMode() } } }
+    var mode: ViewMode = .details { didSet { if oldValue != mode { applyMode(from: oldValue) } } }
     var showExtensions = true
     var showsFolderColumn = false {
         didSet { tableView.tableColumns.first { $0.identifier == Column.folder }?.isHidden = !showsFolderColumn }
@@ -62,7 +62,7 @@ final class FileListController: NSObject {
             messageLabel.widthAnchor.constraint(lessThanOrEqualTo: containerView.widthAnchor, constant: -40),
         ])
         messageLabel.isHidden = true
-        applyMode()
+        applyMode(from: mode)
     }
 
     // MARK: 설정
@@ -135,8 +135,9 @@ final class FileListController: NSObject {
         collectionScroll.autohidesScrollers = true
     }
 
-    private func applyMode() {
-        let selection = selectedURLs
+    /// 보기를 바꾼다. 선택은 바꾸기 전 보기(previous)에서 읽어 새 보기로 옮긴다 (M4).
+    private func applyMode(from previous: ViewMode) {
+        let selection = selectedIndexes(in: previous).filter { $0 < items.count }.map { items[$0].url }
         let hadFocus = containerView.window.map { isFocused(in: $0) } ?? false
         cancelRename()
         tableScroll.isHidden = mode != .details
@@ -148,7 +149,16 @@ final class FileListController: NSObject {
             layout.sectionInset = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
             layout.invalidateLayout()
         }
-        collectionView.reloadData()
+        // 숨은 보기는 setItems 에서 다시 그리지 않으므로 여기서 채운다. 이전 보기의 선택은 비운다.
+        suppressSelectionCallback = true
+        if mode == .details {
+            tableView.reloadData()
+            collectionView.selectionIndexPaths = []
+        } else {
+            collectionView.reloadData()
+            tableView.deselectAll(nil)
+        }
+        suppressSelectionCallback = false
         select(selection, scroll: true, notify: false)
         if hadFocus { focus() }
     }
@@ -164,8 +174,8 @@ final class FileListController: NSObject {
         if isRenaming { cancelRename() }
         items = newItems
         suppressSelectionCallback = true
-        tableView.reloadData()
-        collectionView.reloadData()
+        // 보이는 보기만 다시 그린다. 숨은 보기는 보기를 바꿀 때 채우고 선택도 그때 옮긴다 (M8).
+        if mode == .details { tableView.reloadData() } else { collectionView.reloadData() }
         suppressSelectionCallback = false
         select(urls, scroll: false)
     }
@@ -179,7 +189,9 @@ final class FileListController: NSObject {
         Formats.displayName(item, showExtensions: showExtensions)
     }
 
-    var selectedIndexes: IndexSet {
+    var selectedIndexes: IndexSet { selectedIndexes(in: mode) }
+
+    private func selectedIndexes(in mode: ViewMode) -> IndexSet {
         if mode == .details { return tableView.selectedRowIndexes }
         return IndexSet(collectionView.selectionIndexPaths.map(\.item))
     }
@@ -202,13 +214,20 @@ final class FileListController: NSObject {
     }
 
     func select(indexes: IndexSet, scroll: Bool = true, notify: Bool = true) {
+        // 선택은 보이는 보기에만 둔다. 보기를 바꿀 때 applyMode 가 옮긴다.
         suppressSelectionCallback = true
-        tableView.selectRowIndexes(indexes, byExtendingSelection: false)
-        collectionView.selectionIndexPaths = Set(indexes.map { IndexPath(item: $0, section: 0) })
+        if mode == .details {
+            tableView.selectRowIndexes(indexes, byExtendingSelection: false)
+        } else {
+            collectionView.selectionIndexPaths = Set(indexes.map { IndexPath(item: $0, section: 0) })
+        }
         suppressSelectionCallback = false
         if scroll, let first = indexes.first {
-            tableView.scrollRowToVisible(first)
-            collectionView.scrollToItems(at: [IndexPath(item: first, section: 0)], scrollPosition: .nearestHorizontalEdge)
+            if mode == .details {
+                tableView.scrollRowToVisible(first)
+            } else {
+                collectionView.scrollToItems(at: [IndexPath(item: first, section: 0)], scrollPosition: .nearestHorizontalEdge)
+            }
         }
         if notify { delegate?.fileListSelectionDidChange() }
     }

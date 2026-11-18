@@ -20,17 +20,17 @@ enum ClipboardBridge {
         state.post(AppState.clipboardChanged)
     }
 
-    /// 붙여넣을 URL 과 동작. 다른 앱이 대지를 바꿨으면 잘라내기 상태를 버리고 복사로 본다.
-    static func readForPaste() -> (urls: [URL], mode: FileClipboard.Mode)? {
+    /// 붙여넣을 URL 과 동작, 읽은 시점의 대지 changeCount. 다른 앱이 대지를 바꿨으면 잘라내기 상태를 버리고 복사로 본다.
+    static func readForPaste() -> (urls: [URL], mode: FileClipboard.Mode, changeCount: Int)? {
         let pb = pasteboard
         guard let urls = pb.readObjects(forClasses: [NSURL.self], options: fileOptions) as? [URL],
               !urls.isEmpty else { return nil }
         syncWithPasteboard()
         let state = AppState.shared
         if state.clipboard.mode == .cut, pb.changeCount == state.clipboardChangeCount {
-            return (urls, .cut)
+            return (urls, .cut, pb.changeCount)
         }
-        return (urls, .copy)
+        return (urls, .copy, pb.changeCount)
     }
 
     static var canPaste: Bool {
@@ -38,7 +38,9 @@ enum ClipboardBridge {
     }
 
     /// 잘라내기 후 붙여넣기가 끝나면 Windows 처럼 대지를 비운다.
-    static func finishCutPaste() {
+    /// 작업 중에 대지에 새 내용을 복사했으면(changeCount 가 다르면) 그 내용은 그대로 둔다.
+    static func finishCutPaste(changeCount: Int) {
+        guard pasteboard.changeCount == changeCount else { return }
         pasteboard.clearContents()
         clearCutState()
     }

@@ -85,7 +85,7 @@ extension BrowserViewController {
         let move = content.mode == .cut
         Task {
             if await performTransfer(content.urls, to: destination, move: move), move {
-                ClipboardBridge.finishCutPaste()
+                ClipboardBridge.finishCutPaste(changeCount: content.changeCount)
             }
         }
     }
@@ -96,7 +96,7 @@ extension BrowserViewController {
         let destination = currentURL
         Task {
             if await performTransfer(content.urls, to: destination, move: true) {
-                ClipboardBridge.finishCutPaste()
+                ClipboardBridge.finishCutPaste(changeCount: content.changeCount)
             }
         }
     }
@@ -110,26 +110,70 @@ extension BrowserViewController {
         Task { await performTransfer(urls, to: destination, move: move) }
     }
 
-    /// 충돌이 있으면 항목마다 대화상자(F8)로 정책을 묻고 복사·이동한다. 성공하면 true.
+    /// 충돌이 있으면 원본마다 대화상자(F8)로 정책을 묻고 복사·이동한다. 성공하면 true.
+    /// 폴더끼리 부딪치면 병합하고 그 안의 충돌도 하나씩 묻는다. 건너뛴 원본은 작업에 넣지 않는다.
+    /// 앞 작업이 끝난 뒤의 파일 상태로 묻도록 질문도 작업 큐 안에서 한다.
     @discardableResult
     func performTransfer(_ urls: [URL], to destination: URL, move: Bool) async -> Bool {
         guard !urls.isEmpty else { return false }
-        let conflicts = ConflictDialog.conflicts(for: urls, in: destination)
-        var decisions: [String: ConflictPolicy] = [:]
-        if !conflicts.isEmpty {
-            guard let chosen = await ConflictDialog.decide(conflicts: conflicts, total: urls.count,
-                                                           destination: destination, move: move,
-                                                           window: view.window) else { return false }
-            decisions = chosen
+        let state = self.state
+        let window = view.window
+        let outcome: Result<OperationResult, Error>? = await state.operations.run {
+            let scanned = await Task.detached(priority: .userInitiated) {
+                (ConflictDialog.scan(urls, to: destination), ConflictDialog.isCaseSensitive(destination))
+            }.value
+            guard let plan = await ConflictDialog.plan(scanned.0, destination: destination, move: move,
+                                                       caseSensitive: scanned.1, window: window),
+                  !plan.sources.isEmpty else { return nil }
+            let sources = plan.sources
+            let resolver = plan.resolver
+            let result = await Task.detached(priority: .userInitiated) {
+                Result {
+                    move ? try FileOperations.move(sources, to: destination, conflict: resolver.policy(for:))
+                         : try FileOperations.copy(sources, to: destination, conflict: resolver.policy(for:))
+                }
+            }.value
+            if case .success(let done) = result { state.pushUndo(done.record) }
+            return result
         }
-        // 미리 묻지 못한 충돌(같은 이름 원본 두 개 등)은 덮어쓰지 않고 둘 다 유지한다.
-        let policies = decisions
-        let result = await runOperation {
-            let policy: (URL) -> ConflictPolicy = { policies[Location.key($0)] ?? .keepBoth }
-            return move ? try FileOperations.move(urls, to: destination, conflict: policy)
-                        : try FileOperations.copy(urls, to: destination, conflict: policy)
+        guard let outcome else { return false }
+        let folders = [destination] + urls.map { $0.deletingLastPathComponent() }
+        return finishOperation(outcome, renameResult: false, folders: folders) != nil
+    }
+
+    /// Cmd+D: 선택 항목을 같은 폴더에 "이름 - 복사본" 으로 복제한다. 검색 결과면 항목마다 제 폴더에 만든다.
+    @objc func duplicateSelection(_ sender: Any?) {
+        let urls = selectedURLs
+        guard !urls.isEmpty, !isThisMac else { return }
+        var groups: [(parent: URL, urls: [URL])] = []
+        for url in urls {
+            let parent = url.deletingLastPathComponent()
+            if let index = groups.firstIndex(where: { Location.same($0.parent, parent) }) {
+                groups[index].urls.append(url)
+            } else {
+                groups.append((parent, [url]))
+            }
         }
-        return result != nil
+        let batches = groups
+        Task {
+            await runOperation {
+                var records: [FileOperationRecord] = []
+                var created: [URL] = []
+                do {
+                    for batch in batches {
+                        let result = try FileOperations.copy(batch.urls, to: batch.parent, conflict: .keepBoth)
+                        if let record = result.record { records.append(record) }
+                        created += result.resultURLs
+                    }
+                } catch {
+                    // 앞 폴더에서 만든 복사본은 되돌린다.
+                    for record in records.reversed() { _ = try? FileOperations.undo(record) }
+                    throw error
+                }
+                let record: FileOperationRecord? = records.count > 1 ? .compound(records: records) : records.first
+                return OperationResult(record: record, resultURLs: created, skipped: [])
+            }
+        }
     }
 
     // MARK: 삭제 (F4)
@@ -176,14 +220,17 @@ extension BrowserViewController {
         Task { await runOperation { try FileOperations.rename(url, to: newName) } }
     }
 
+    /// 검색 중이면 검색을 끝내고 현재 폴더에 만들어 바로 이름을 편집한다.
     @objc func newFolder(_ sender: Any?) {
         guard !isThisMac else { return }
+        if isSearching { endSearch() }
         let directory = currentURL
         Task { await runOperation(renameResult: true) { try FileOperations.createFolder(in: directory) } }
     }
 
     @objc func newTextFile(_ sender: Any?) {
         guard !isThisMac else { return }
+        if isSearching { endSearch() }
         let directory = currentURL
         Task { await runOperation(renameResult: true) { try FileOperations.createFile(in: directory) } }
     }
@@ -193,34 +240,37 @@ extension BrowserViewController {
     @objc func undo(_ sender: Any?) {
         // 주소창·이름 편집 중의 Cmd+Z 는 글자 실행 취소다.
         if let manager = textUndoManager { manager.undo(); return }
-        guard let record = state.popUndo() else { NSSound.beep(); return }
-        Task {
-            do {
-                let redo = try await Task.detached(priority: .userInitiated) {
-                    try FileOperations.undo(record)
-                }.value
-                state.pushRedo(redo)
-            } catch {
-                presentOperationError(error)
-            }
-            reload()
-        }
+        guard !state.undoStack.isEmpty else { NSSound.beep(); return }
+        Task { await runHistory(redo: false) }
     }
 
     @objc func redo(_ sender: Any?) {
         if let manager = textUndoManager { manager.redo(); return }
-        guard let record = state.popRedo() else { NSSound.beep(); return }
-        Task {
-            do {
-                let undo = try await Task.detached(priority: .userInitiated) {
-                    try FileOperations.undo(record)
-                }.value
-                state.pushUndoKeepingRedo(undo)
-            } catch {
-                presentOperationError(error)
+        guard !state.redoStack.isEmpty else { NSSound.beep(); return }
+        Task { await runHistory(redo: true) }
+    }
+
+    /// 실행 취소·다시 실행도 작업 큐에서 차례로 한다. 기록은 실행할 차례에 꺼내고, 성공해야 반대 스택으로 옮긴다.
+    /// 실패하면 Core 가 바꾼 것을 되돌리므로 기록을 그대로 두어 원인을 치운 뒤 다시 시도할 수 있다.
+    private func runHistory(redo: Bool) async {
+        let state = self.state
+        let outcome: Result<Void, Error>? = await state.operations.run {
+            guard let record = redo ? state.redoStack.last : state.undoStack.last else { return nil }
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try FileOperations.undo(record) }
+            }.value
+            switch result {
+            case .success(let inverse):
+                if redo { state.completeRedo(undo: inverse) } else { state.completeUndo(redo: inverse) }
+                return .success(())
+            case .failure(let error):
+                return .failure(error)
             }
-            reload()
         }
+        guard let outcome else { NSSound.beep(); return }
+        if case .failure(let error) = outcome { presentOperationError(error) }
+        state.post(AppState.filesChanged)
+        reload()
     }
 
     /// 글자 입력 중이면 그 입력 칸의 실행 취소 관리자.
@@ -322,17 +372,33 @@ extension BrowserViewController {
 
     // MARK: 공통 실행
 
-    /// Core 작업을 백그라운드에서 돌리고 실행 취소 기록, 목록 갱신, 오류 표시를 맡는다.
+    /// Core 작업을 앱 공유 작업 큐에서 백그라운드로 돌리고 실행 취소 기록, 목록 갱신, 오류 표시를 맡는다.
+    /// 창이 닫혀도 작업과 실행 취소 기록은 끝까지 처리한다.
     @discardableResult
     func runOperation(renameResult: Bool = false,
                       _ work: @escaping @Sendable () throws -> OperationResult) async -> OperationResult? {
-        do {
-            let result = try await Task.detached(priority: .userInitiated) { try work() }.value
-            state.pushUndo(result.record)
+        let state = self.state
+        let outcome: Result<OperationResult, Error> = await state.operations.run {
+            let result = await Task.detached(priority: .userInitiated) { Result { try work() } }.value
+            if case .success(let done) = result { state.pushUndo(done.record) }
+            return result
+        }
+        return finishOperation(outcome, renameResult: renameResult, folders: [])
+    }
+
+    /// 작업 결과를 화면에 반영한다. folders 와 결과 항목의 폴더는 탐색 창도 다시 읽는다.
+    @discardableResult
+    private func finishOperation(_ outcome: Result<OperationResult, Error>, renameResult: Bool,
+                                 folders: [URL]) -> OperationResult? {
+        switch outcome {
+        case .success(let result):
+            let changed = folders + result.resultURLs.map { $0.deletingLastPathComponent() } + [currentURL]
+            state.post(AppState.filesChanged, userInfo: ["folders": changed.filter { !Location.isThisMac($0) }])
             reload(selecting: result.resultURLs, rename: renameResult ? result.resultURLs.first : nil)
             return result
-        } catch {
+        case .failure(let error):
             presentOperationError(error)
+            state.post(AppState.filesChanged)
             reload()
             return nil
         }
@@ -341,8 +407,25 @@ extension BrowserViewController {
     func presentOperationError(_ error: Error) {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "작업을 완료할 수 없습니다."
-        alert.informativeText = error.localizedDescription
+        switch error as? FileOperationError {
+        case .partialDeletion(let deleted, let failed, let reason)?:
+            alert.alertStyle = .critical
+            alert.messageText = "일부 항목만 영구 삭제되었습니다."
+            let shown = deleted.prefix(10).map { "  \($0.path)" }
+            let more = deleted.count > shown.count ? ["  외 \(deleted.count - shown.count)개"] : []
+            alert.informativeText = (["'\(failed.lastPathComponent)'을(를) 삭제하지 못해 작업을 멈췄습니다.",
+                                      "이유: \(reason)", "", "이미 삭제되어 되돌릴 수 없는 항목 \(deleted.count)개:"]
+                                     + shown + more).joined(separator: "\n")
+        case .destinationContainsSource(let path)?:
+            alert.messageText = "대상의 같은 이름 항목이 옮기려는 원본을 포함하고 있습니다."
+            alert.informativeText = "'\(URL(fileURLWithPath: path).lastPathComponent)'을(를) 덮어쓰거나 병합하면 원본도 사라지므로 작업을 멈췄습니다. 아무것도 바뀌지 않았습니다.\n\n대상: \(path)"
+        case .destinationInsideSource(let path)?:
+            alert.messageText = "폴더를 자기 자신이나 그 하위 폴더로 옮기거나 복사할 수 없습니다."
+            alert.informativeText = "아무것도 바뀌지 않았습니다.\n\n대상: \(path)"
+        default:
+            alert.messageText = "작업을 완료할 수 없습니다."
+            alert.informativeText = error.localizedDescription
+        }
         if let window = view.window {
             alert.beginSheetModal(for: window)
         } else {
@@ -361,11 +444,11 @@ extension BrowserViewController: NSMenuItemValidation {
         switch action {
         case #selector(goBack(_:)): return history.canGoBack
         case #selector(goForward(_:)): return history.canGoForward
-        case #selector(goUp(_:)): return !isThisMac
+        case #selector(goUp(_:)): return canGoUp
         case #selector(openSelection(_:)): return !selected.isEmpty
         case #selector(openInNewTab(_:)):
             return menuItem.representedObject is URL || selected.contains(where: \.isNavigable)
-        case #selector(cut(_:)), #selector(copy(_:)), #selector(moveToTrash(_:)),
+        case #selector(cut(_:)), #selector(copy(_:)), #selector(moveToTrash(_:)), #selector(duplicateSelection(_:)),
              #selector(deletePermanently(_:)), #selector(compressSelection(_:)):
             return hasSelection
         case #selector(copyPath(_:)), #selector(revealInFinder(_:)), #selector(showProperties(_:)):

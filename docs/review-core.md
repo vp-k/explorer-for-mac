@@ -71,3 +71,77 @@ DirectoryWatcher 는 약한 참조와 세대 번호로 늦은 콜백을 막습�
 - H1~H3 수정이 필요합니다. 수정 시 위 표의 "잘못된 동작을 고정한 테스트" 3개도 함께 바꿔야 합니다.
 - H3 의 병합 방식은 사용자 결정이 필요합니다. 선택지는 Windows 식 병합, 또는 교체 유지 후 휴지통 백업입니다.
 - M6 은 Windows 실기 확인이 필요합니다.
+
+## 재검증 (2f584bf)
+
+**결론: 이전 High 3건은 모두 닫혔고, 새 Critical·High 는 없습니다.**
+이전 지적 16건 중 15건이 닫혔습니다. M6 은 한계를 문서로 밝힌 부분 해결입니다.
+새로 Medium 3건과 Low 4건을 찾았습니다. 데이터가 영구 손실되는 경로는 재현되지 않았습니다.
+
+- 재현 위치: `/tmp/explorer-verify-core/` 의 `Repro.swift`, `Verify.swift`
+- 재현 실행: `cd /tmp/explorer-verify-core && swift test`
+- 보조 볼륨: 대소문자 구분 APFS 이미지, FAT 이미지. 실험 뒤 분리함
+
+### 숫자
+
+| 항목 | 값 |
+|---|---|
+| 프로젝트 `swift test` | 124개 실행, 실패 0 |
+| 재현 패키지 테스트 | 38개 실행, 실패 5 |
+| 실패 5개의 의미 | R4 는 결함이 고쳐져 반전 기대가 깨진 것 |
+| 실패 중 zip 단언 | 한글 이름이 zipinfo 에서 깨져 보임. 구조는 정상이며 M6 증상 |
+| 실패 중 새 결함 | testN7 은 V-M2, testN8 은 V-M1 |
+| 이전 지적 판정 | 닫힘 15, 부분 1, 열림 0 |
+| 새 발견 | Critical 0, High 0, Medium 3, Low 4 |
+
+### 이전 지적 판정
+
+| ID | 판정 | 확인 방법 | 결과 |
+|---|---|---|---|
+| H1 | 닫힘 | testV_H1H2M5L4_zip | 단일 파일 zip 엔트리가 파일 하나뿐 |
+| H2 | 닫힘 | testV_H1H2M5L4_zip, testR2 | 여러 항목이 zip 최상위에 놓임 |
+| H3 | 닫힘 | testV_H3_merge, testR6 | 폴더 충돌이 병합됨. `keep.txt` 유지 |
+| M1 | 닫힘 | testV_M1_duplicateNames, testR5, testR5b | 둘째 원본이 `x (2).txt`. 실행 취소로 두 원본 복구 |
+| M2 | 닫힘 | testV_M2_undoReplace, testR14 | 실행 취소 후 `old` 내용 복구 |
+| M3 | 닫힘 | testV_M3_package, testR3 | `Foo - 복사본.app`, `Foo (2).app` |
+| M4 | 닫힘 | testV_M4_contentChange, testR4 | 파일 내용 변경에 이벤트 발생. R4 의 반전 기대가 깨짐 |
+| M5 | 닫힘 | testV_H1H2M5L4_zip | 모든 zip 에 `__MACOSX` 없음 |
+| M6 | 부분 | python zipfile 로 플래그 확인 | 플래그는 여전히 없음. 한계를 문서 주석에 명시함 |
+| L1 | 닫힘 | testV_L1_ancestor, testR7 | 원본을 품은 대상 오류로 사전 거부. 원본 그대로 |
+| L2 | 닫힘 | testV_L2_symlinkStats | 링크 폴더 합계 1000바이트 |
+| L3 | 닫힘 | 코드 확인, 프로젝트 테스트 | 일부 삭제 시 삭제 목록을 오류에 담음 |
+| L4 | 닫힘 | testV_H1H2M5L4_zip | zip 이름이 첫 항목 이름. 겹치면 번호 붙음 |
+| L5 | 닫힘 | 코드 확인, 프로젝트 테스트 | 클론 복사로 스테이징 |
+| L6 | 닫힘 | 코드 확인 | 대상 폴더 안 숨김 임시 폴더에 풀고 이동 |
+| L7 | 닫힘 | testV_L7_rootRename | 감시 폴더 이름 변경 시 콜백 발생. 재감시 책임도 문서화됨 |
+
+### 데이터 손실 집중 점검
+
+| 시나리오 | 결과 | 재현 테스트 |
+|---|---|---|
+| 병합 복사 중 읽기 실패 | 대상 트리 원상 복구. 밀려난 파일도 복구 | testN1_mergeCopyFailureRollback |
+| 병합 이동 중 잠긴 파일 실패 | 원본·대상 트리 모두 원상 복구 | testN2_mergeMoveFailureRollback |
+| 병합 + 덮어쓰기·건너뛰기·둘 다 유지 혼합 후 undo/redo 5회 | 복사·이동 모두 매 단계 트리 일치 | testN3_undoRedoCycles |
+| 대소문자 무시 볼륨에서 `Foo/A.TXT` 를 `foo/a.txt` 로 병합 | 한 번만 묻고 병합. undo/redo 3회 일치 | testN4_caseInsensitiveCollision |
+| 대소문자 구분 볼륨의 `a.txt`·`A.txt` 를 통째 복사 | 오류로 중단. 대상에 잔여물 없음 | testN4b_caseSensitiveSourceIntoInsensitive |
+| 패키지끼리 덮어쓰기 | 병합하지 않고 통째 교체. undo/redo 복구 | testN5_packageConflict |
+| FAT 볼륨에서 덮어쓰기·병합 이동 | 볼륨 휴지통으로 백업. 정상 동작 | testN11_fatVolume |
+
+### 새 발견
+
+| ID | 심각도 | 파일:줄 | 문제 | 재현 | 제안 |
+|---|---|---|---|---|---|
+| V-M1 | Medium | Support.swift:279 | 심볼릭 링크 경로로 감시하면 감시가 조용히 꺼진다. 링크 URL 의 폴더 여부가 거짓으로 나오기 때문이다. UI 는 링크를 풀지 않은 경로를 넘긴다. `/tmp` 나 링크 폴더를 열면 자동 새로 고침이 없다. 이전 fd 방식은 링크를 따라갔으므로 회귀다 | testN8_watchSymlinkPath. 2초간 이벤트 없음 | 검사 전에 `resolvingSymlinksInPath()` 적용 |
+| V-M2 | Medium | Support.swift:294-302 | FSEvents 는 하위 트리 전체를 감시한다. 4단계 아래 파일 생성에도 콜백이 온다. UI 는 콜백마다 아이콘 캐시를 비우고 다시 읽는다. 홈 폴더를 열어 두면 Library 변화로 0.3초마다 새로 고침될 수 있다 | testN7_deepSubtreeEvents. 반전 기대가 깨짐 | 콜백의 경로 목록을 받아 감시 폴더와 직속 자식 이벤트만 통과시킴 |
+| V-M3 | Medium | FileOperations.swift:388, 439-441 | 선택에 대상 폴더의 같은 이름 항목이 함께 있으면 덮어쓰기가 그 원본을 먼저 휴지통에 보낸다. 이어서 같은 경로의 다른 내용을 복사본으로 만든다. 결과 폴더에 원래 내용이 없다. 휴지통과 실행 취소로는 복구된다 | testN6_selectionContainsTargetItem. `a/x.txt(A)`, `d/x.txt(D)` 를 `d` 로 복사. 결과 `x.txt=A`, `x - 복사본.txt=A` | 덮어쓸 대상이 배치 원본이면 사전 검사에서 거부하거나 keepBoth 로 처리 |
+| V-L1 | Low | FileOperations.swift:450 | 병합 시 숨김 `.DS_Store` 충돌도 사용자에게 묻는다. 건너뛰면 원본 폴더가 남는다 | testN9_dsStoreConflict | `.DS_Store` 는 묻지 않고 대상 것을 유지 |
+| V-L2 | Low | FileOperations.swift:402, 413 | 같은 이름 폴더 둘을 기존 폴더로 옮기면 둘째가 `F (2)` 가 된다. Windows 는 둘 다 병합한다 | testN10_duplicateFoldersBatch | 폴더끼리면 중복 이름이어도 병합 허용 |
+| V-L3 | Low | FileOperations.swift:450-454 | 대소문자 구분 원본의 `a.txt`·`A.txt` 를 무시 볼륨 기존 폴더로 병합하면 방금 쓴 형제와 충돌해 묻는다. 덮어쓰기를 고르면 방금 옮긴 형제가 휴지통으로 간다 | testN4b. `keepBoth` 로 `a (2).txt` 생성 확인 | 병합 자식에도 배치 내 이름 추적 적용 |
+| V-L4 | Low | FileOperations.swift:462-470 | 덮어쓰기와 병합 이동이 휴지통 이동에 의존한다. 휴지통이 없는 네트워크 볼륨에서는 덮어쓰기가 불가능할 수 있다 | 확인 못 함. FAT 는 정상 | 휴지통 실패 시 같은 볼륨 숨김 백업으로 대체 |
+
+### 남은 것
+
+- V-M1 은 수정이 간단하고 회귀이므로 먼저 고치기를 권합니다.
+- V-M2 의 범위 결정이 필요합니다. 하위 트리 변경을 무시할지 사용자 판단이 필요합니다.
+- M6 은 여전히 Windows 실기 확인이 필요합니다.
+- V-L4 는 SMB 볼륨 실기 확인이 필요합니다.

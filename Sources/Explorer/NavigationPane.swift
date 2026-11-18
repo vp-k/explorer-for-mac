@@ -13,6 +13,8 @@ final class NavNode: NSObject {
     var children: [NavNode]?
     /// 백그라운드에서 하위 폴더를 읽는 중.
     var isLoading = false
+    /// 읽는 중에 다시 읽기 요청이 왔다. 끝나면 한 번 더 읽는다.
+    var needsReload = false
 
     init(_ kind: Kind, title: String, url: URL?, volume: VolumeInfo? = nil, children: [NavNode]? = nil) {
         self.kind = kind
@@ -33,16 +35,23 @@ final class NavNode: NSObject {
         guard children == nil, !isLoading, let url else { return }
         isLoading = true
         Task { [weak self] in
-            let folders = await Task.detached(priority: .userInitiated) { () -> [FileItem] in
-                let items = ((try? DirectoryLister.contents(of: url, showHidden: false)) ?? []).filter(\.isNavigable)
-                return FileSorter.sorted(items, by: ExplorerCore.SortOrder())
-            }.value
+            let folders = await Task.detached(priority: .userInitiated) { Self.readFolders(url) }.value
             guard let self else { return }
             self.isLoading = false
             self.children = folders.map { NavNode(.folder, title: $0.name, url: $0.url) }
             completion(self)
         }
     }
+}
+
+extension NavNode {
+    nonisolated static func readFolders(_ url: URL) -> [FileItem] {
+        let items = ((try? DirectoryLister.contents(of: url, showHidden: false)) ?? []).filter(\.isNavigable)
+        return FileSorter.sorted(items, by: ExplorerCore.SortOrder())
+    }
+
+    /// 트리 노드 중 하위 폴더를 디스크에서 읽어 채우는 종류.
+    var readsChildren: Bool { [.home, .folder, .pinned, .volume].contains(kind) }
 }
 
 /// N6 탐색 창: 홈 / 빠른 액세스 / 내 Mac(볼륨, 용량 막대) / 휴지통.
@@ -120,6 +129,52 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
 
     private func volumeNodes() -> [NavNode] {
         VolumeLister.volumes().map { NavNode(.volume, title: $0.name, url: $0.url, volume: $0) }
+    }
+
+    /// 이미 읽어 둔 노드의 하위 폴더를 다시 읽는다. folders 가 nil 이면 읽어 둔 노드 전부다.
+    /// 만들기·삭제·이름 바꾸기 뒤나 F5 에 부른다. 펼침 상태와 하위 노드는 경로가 같으면 그대로 둔다 (M7).
+    func refreshTree(_ folders: [URL]?) {
+        let keys = folders.map { Set($0.map(Location.key)) }
+        var stack = roots
+        while let node = stack.popLast() {
+            stack += node.loadedChildren
+            guard node.readsChildren, node.children != nil, let url = node.url else { continue }
+            if let keys, !keys.contains(Location.key(url)) { continue }
+            reloadChildren(of: node)
+        }
+    }
+
+    private func reloadChildren(of node: NavNode) {
+        guard let url = node.url else { return }
+        if node.isLoading { node.needsReload = true; return }
+        node.isLoading = true
+        Task { [weak self, weak node] in
+            let folders = await Task.detached(priority: .userInitiated) { NavNode.readFolders(url) }.value
+            guard let self, let node else { return }
+            node.isLoading = false
+            let wasExpanded = self.outline.isItemExpanded(node)
+            var previous: [String: NavNode] = [:]
+            var expanded = Set<String>()
+            for child in node.loadedChildren {
+                guard let childURL = child.url else { continue }
+                let key = Location.key(childURL)
+                previous[key] = previous[key] ?? child
+                if self.outline.isItemExpanded(child) { expanded.insert(key) }
+            }
+            node.children = folders.map { previous[Location.key($0.url)] ?? NavNode(.folder, title: $0.name, url: $0.url) }
+            self.outline.reloadItem(node, reloadChildren: true)
+            if wasExpanded, !node.loadedChildren.isEmpty {
+                self.outline.expandItem(node)
+                for child in node.loadedChildren where expanded.contains(Location.key(child.url!)) {
+                    self.outline.expandItem(child)
+                }
+            }
+            self.select(url: self.selectedURL ?? url)
+            if node.needsReload {
+                node.needsReload = false
+                self.reloadChildren(of: node)
+            }
+        }
     }
 
     /// 현재 위치와 같은 항목을 고른다. 펼쳐진 항목만 찾는다.

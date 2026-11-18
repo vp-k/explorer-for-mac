@@ -10,6 +10,8 @@ final class AppState {
     static let clipboardChanged = Notification.Name("Explorer.clipboardChanged")
     static let pinsChanged = Notification.Name("Explorer.pinsChanged")
     static let volumesChanged = Notification.Name("Explorer.volumesChanged")
+    /// 파일 작업이 끝났다. userInfo["folders"] 는 바뀐 폴더 [URL], 없으면 전부 다시 읽는다.
+    static let filesChanged = Notification.Name("Explorer.filesChanged")
 
     private let defaults = UserDefaults.standard
 
@@ -30,6 +32,9 @@ final class AppState {
 
     private(set) var undoStack: [FileOperationRecord] = []
     private(set) var redoStack: [FileOperationRecord] = []
+
+    /// 모든 창의 파일 작업, 실행 취소, 다시 실행을 차례대로 실행한다.
+    let operations = SerialOperationQueue()
 
     /// N7 빠른 액세스 고정 폴더.
     lazy var pins = PinnedFolderStore(storageURL: Self.supportDirectory.appendingPathComponent("pinned.json"))
@@ -60,16 +65,18 @@ final class AppState {
         redoStack.removeAll()
     }
 
-    func popUndo() -> FileOperationRecord? { undoStack.popLast() }
-    func popRedo() -> FileOperationRecord? { redoStack.popLast() }
-
-    func pushRedo(_ record: FileOperationRecord?) {
-        if let record { redoStack.append(record) }
+    /// 실행 취소가 성공한 뒤에만 기록을 옮긴다. 큐 안에서만 부르므로 맨 위 기록이 그대로다.
+    func completeUndo(redo: FileOperationRecord?) {
+        guard !undoStack.isEmpty else { return }
+        undoStack.removeLast()
+        if let redo { redoStack.append(redo) }
     }
 
     /// 다시 실행 결과는 다시 실행 기록을 지우지 않고 실행 취소 쪽에 쌓는다.
-    func pushUndoKeepingRedo(_ record: FileOperationRecord?) {
-        if let record { undoStack.append(record) }
+    func completeRedo(undo: FileOperationRecord?) {
+        guard !redoStack.isEmpty else { return }
+        redoStack.removeLast()
+        if let undo { undoStack.append(undo) }
     }
 
     // MARK: 빠른 액세스
@@ -79,11 +86,28 @@ final class AppState {
         post(Self.pinsChanged)
     }
 
-    func post(_ name: Notification.Name) {
-        NotificationCenter.default.post(name: name, object: nil)
+    func post(_ name: Notification.Name, userInfo: [AnyHashable: Any]? = nil) {
+        NotificationCenter.default.post(name: name, object: nil, userInfo: userInfo)
     }
 
     @objc private func volumesDidChange(_ note: Notification) {
         post(Self.volumesChanged)
+    }
+}
+
+/// 앞 작업이 끝나야 다음 작업을 시작하는 큐. 작업은 MainActor 에서 시작하고 무거운 일은 직접 백그라운드로 보낸다.
+/// 실행 취소처럼 앞 작업의 결과(기록 스택)에 기대는 작업도 순서가 보장된다.
+@MainActor
+final class SerialOperationQueue {
+    private var tail: Task<Void, Never>?
+
+    func run<T: Sendable>(_ job: @escaping @MainActor () async -> T) async -> T {
+        let previous = tail
+        let task = Task { @MainActor () -> T in
+            await previous?.value
+            return await job()
+        }
+        tail = Task { @MainActor in _ = await task.value }
+        return await task.value
     }
 }

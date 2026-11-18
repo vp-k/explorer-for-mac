@@ -125,7 +125,7 @@ final class AddressBar: NSView, NSTextFieldDelegate {
                     return VolumeLister.volumes().map { ($0.name, $0.url) }
                 }
                 let folders = ((try? DirectoryLister.contents(of: base, showHidden: showHidden)) ?? []).filter(\.isNavigable)
-                return FileSorter.sorted(folders, by: ExplorerCore.SortOrder()).prefix(200).map { ($0.name, $0.url) }
+                return FileSorter.sorted(folders, by: ExplorerCore.SortOrder()).map { ($0.name, $0.url) }
             }.value
             // 읽는 사이 다른 폴더로 갔거나 창이 닫혔으면 띄우지 않는다.
             guard let self, let sender, sender.window != nil, self.path == path, !self.isEditing else { return }
@@ -133,10 +133,31 @@ final class AddressBar: NSView, NSTextFieldDelegate {
         }
     }
 
+    /// 한 메뉴에 아이콘과 함께 넣는 폴더 수. 나머지는 잘라 버리지 않고 "더 보기" 하위 메뉴에 묶어 넣는다 (L2).
+    private static let menuPageSize = 200
+
     private func showFolderMenu(_ entries: [(String, URL)], below sender: NSButton) {
         let menu = NSMenu()
-        for (title, url) in entries {
+        for (title, url) in entries.prefix(Self.menuPageSize) {
             addFolderItem(to: menu, title: title, url: url)
+        }
+        var rest = entries.dropFirst(Self.menuPageSize)
+        if !rest.isEmpty {
+            menu.addItem(.separator())
+            var parent = menu
+            while !rest.isEmpty {
+                let page = rest.prefix(Self.menuPageSize)
+                rest = rest.dropFirst(Self.menuPageSize)
+                let more = NSMenuItem(title: "더 보기 (\(page.count + rest.count)개 더)", action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+                for (title, url) in page {
+                    addFolderItem(to: submenu, title: title, url: url, icon: false)
+                }
+                more.submenu = submenu
+                parent.addItem(more)
+                if !rest.isEmpty { submenu.addItem(.separator()) }
+                parent = submenu
+            }
         }
         if menu.items.isEmpty {
             let empty = NSMenuItem(title: "하위 폴더 없음", action: nil, keyEquivalent: "")
@@ -146,11 +167,12 @@ final class AddressBar: NSView, NSTextFieldDelegate {
         UI.popUp(menu, below: sender)
     }
 
-    private func addFolderItem(to menu: NSMenu, title: String, url: URL) {
+    /// icon 이 false 면 파일마다 아이콘을 읽지 않고 일반 폴더 기호를 쓴다.
+    private func addFolderItem(to menu: NSMenu, title: String, url: URL, icon withIcon: Bool = true) {
         let item = NSMenuItem(title: title, action: #selector(menuFolderChosen(_:)), keyEquivalent: "")
         item.target = self
         item.representedObject = url
-        let icon = IconCache.shared.icon(for: url).copy() as? NSImage
+        let icon = withIcon ? IconCache.shared.icon(for: url).copy() as? NSImage : UI.symbol("folder")
         icon?.size = NSSize(width: 16, height: 16)
         item.image = icon
         menu.addItem(item)
