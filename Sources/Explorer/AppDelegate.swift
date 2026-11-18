@@ -16,8 +16,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWindow.allowsAutomaticWindowTabbing = true
         NSApp.mainMenu = MainMenu.build()
         GlobalKeyHandler.install()
-        if controllers.isEmpty { openWindow(at: Location.home) }
+        if controllers.isEmpty { openWindow(at: Self.startFolder() ?? Location.home) }
         NSApp.activate()
+    }
+
+    /// `open Explorer.app --args <폴더>` 또는 실행 파일 인자로 받은 시작 폴더. 없거나 폴더가 아니면 nil.
+    private static func startFolder() -> URL? {
+        var arguments = Array(CommandLine.arguments.dropFirst())
+        // NSUserDefaults 인자(-Key value)는 건너뛴다.
+        var paths: [String] = []
+        while let argument = arguments.first {
+            arguments.removeFirst()
+            if argument.hasPrefix("-") {
+                if !arguments.isEmpty { arguments.removeFirst() }
+                continue
+            }
+            paths.append(argument)
+        }
+        for path in paths {
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                return url
+            }
+        }
+        return nil
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

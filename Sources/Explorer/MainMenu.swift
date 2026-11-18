@@ -91,6 +91,7 @@ enum MainMenu {
         add(menu, "잘라내기", #selector(B.cut(_:)), "x")
         add(menu, "복사", #selector(B.copy(_:)), "c")
         add(menu, "붙여넣기", #selector(B.paste(_:)), "v")
+        add(menu, "여기로 이동", #selector(B.pasteMove(_:)), "v", [.command, .option])
         add(menu, "경로로 복사", #selector(B.copyPath(_:)), "c", [.command, .shift])
         menu.addItem(.separator())
         add(menu, "모두 선택", #selector(NSResponder.selectAll(_:)), "a")

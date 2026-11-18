@@ -11,6 +11,8 @@ final class NavNode: NSObject {
     let volume: VolumeInfo?
     /// nil 이면 아직 하위 폴더를 읽지 않았다.
     var children: [NavNode]?
+    /// 백그라운드에서 하위 폴더를 읽는 중.
+    var isLoading = false
 
     init(_ kind: Kind, title: String, url: URL?, volume: VolumeInfo? = nil, children: [NavNode]? = nil) {
         self.kind = kind
@@ -22,14 +24,24 @@ final class NavNode: NSObject {
 
     var isExpandable: Bool { kind != .trash }
 
-    /// 폴더 트리 펼치기. 숨김 폴더는 트리에 넣지 않는다.
-    func loadChildren() -> [NavNode] {
-        if let children { return children }
-        guard let url else { return [] }
-        let folders = ((try? DirectoryLister.contents(of: url, showHidden: false)) ?? []).filter(\.isNavigable)
-        let loaded = FileSorter.sorted(folders, by: ExplorerCore.SortOrder()).map { NavNode(.folder, title: $0.name, url: $0.url) }
-        children = loaded
-        return loaded
+    /// 읽어 둔 하위 폴더. 아직 읽지 않았으면 빈 배열이다.
+    var loadedChildren: [NavNode] { children ?? [] }
+
+    /// 폴더 트리 펼치기. 느린 볼륨에서도 화면이 멈추지 않도록 백그라운드에서 읽고 끝나면 completion 을 부른다.
+    /// 숨김 폴더는 트리에 넣지 않는다.
+    func loadChildrenInBackground(_ completion: @escaping @MainActor (NavNode) -> Void) {
+        guard children == nil, !isLoading, let url else { return }
+        isLoading = true
+        Task { [weak self] in
+            let folders = await Task.detached(priority: .userInitiated) { () -> [FileItem] in
+                let items = ((try? DirectoryLister.contents(of: url, showHidden: false)) ?? []).filter(\.isNavigable)
+                return FileSorter.sorted(items, by: ExplorerCore.SortOrder())
+            }.value
+            guard let self else { return }
+            self.isLoading = false
+            self.children = folders.map { NavNode(.folder, title: $0.name, url: $0.url) }
+            completion(self)
+        }
     }
 }
 
@@ -48,6 +60,8 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
     private var quickAccess = NavNode(.header, title: "빠른 액세스", url: nil, children: [])
     private var thisMac = NavNode(.thisMac, title: "내 Mac", url: Location.thisMac, children: [])
     private var suppressSelection = false
+    /// 마지막으로 select(url:) 로 고른 위치. 트리를 다시 그린 뒤 선택을 되살릴 때 쓴다.
+    private var selectedURL: URL?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -110,6 +124,7 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
 
     /// 현재 위치와 같은 항목을 고른다. 펼쳐진 항목만 찾는다.
     func select(url: URL) {
+        selectedURL = url
         let key = Location.isThisMac(url) ? url.absoluteString : Location.key(url)
         var match = -1
         for row in 0..<outline.numberOfRows {
@@ -130,12 +145,27 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         guard let node = item as? NavNode else { return roots.count }
-        return node.loadChildren().count
+        return node.loadedChildren.count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
         guard let node = item as? NavNode else { return roots[index] }
-        return node.loadChildren()[index]
+        return node.loadedChildren[index]
+    }
+
+    /// 펼칠 때 처음이면 하위 폴더를 백그라운드에서 읽고, 다 읽으면 그 항목만 다시 그린다.
+    func outlineViewItemWillExpand(_ notification: Notification) {
+        guard let node = notification.userInfo?["NSObject"] as? NavNode, node.children == nil else { return }
+        node.loadChildrenInBackground { [weak self] node in
+            guard let self else { return }
+            self.outline.reloadItem(node, reloadChildren: true)
+            if node.loadedChildren.isEmpty {
+                self.outline.collapseItem(node)
+            } else {
+                self.outline.expandItem(node)
+            }
+            self.select(url: self.selectedURL ?? node.url ?? Location.home)
+        }
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {

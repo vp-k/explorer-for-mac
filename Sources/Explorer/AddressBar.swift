@@ -113,21 +113,30 @@ final class AddressBar: NSView, NSTextFieldDelegate {
         onNavigate?(crumbs[sender.tag].url)
     }
 
-    /// `>` 를 누르면 그 폴더의 하위 폴더 메뉴.
+    /// `>` 를 누르면 그 폴더의 하위 폴더 메뉴. 폴더는 백그라운드에서 읽고 다 읽으면 메뉴를 띄운다.
     @objc private func chevronClicked(_ sender: NSButton) {
         guard crumbs.indices.contains(sender.tag) else { return }
         let base = crumbs[sender.tag].url
+        let showHidden = AppState.shared.showHidden
+        let path = self.path
+        Task { [weak self, weak sender] in
+            let entries = await Task.detached(priority: .userInitiated) { () -> [(String, URL)] in
+                if Location.isThisMac(base) {
+                    return VolumeLister.volumes().map { ($0.name, $0.url) }
+                }
+                let folders = ((try? DirectoryLister.contents(of: base, showHidden: showHidden)) ?? []).filter(\.isNavigable)
+                return FileSorter.sorted(folders, by: ExplorerCore.SortOrder()).prefix(200).map { ($0.name, $0.url) }
+            }.value
+            // 읽는 사이 다른 폴더로 갔거나 창이 닫혔으면 띄우지 않는다.
+            guard let self, let sender, sender.window != nil, self.path == path, !self.isEditing else { return }
+            self.showFolderMenu(entries, below: sender)
+        }
+    }
+
+    private func showFolderMenu(_ entries: [(String, URL)], below sender: NSButton) {
         let menu = NSMenu()
-        if Location.isThisMac(base) {
-            for volume in VolumeLister.volumes() {
-                addFolderItem(to: menu, title: volume.name, url: volume.url)
-            }
-        } else {
-            let showHidden = AppState.shared.showHidden
-            let folders = ((try? DirectoryLister.contents(of: base, showHidden: showHidden)) ?? []).filter(\.isNavigable)
-            for folder in FileSorter.sorted(folders, by: ExplorerCore.SortOrder()).prefix(200) {
-                addFolderItem(to: menu, title: folder.name, url: folder.url)
-            }
+        for (title, url) in entries {
+            addFolderItem(to: menu, title: title, url: url)
         }
         if menu.items.isEmpty {
             let empty = NSMenuItem(title: "하위 폴더 없음", action: nil, keyEquivalent: "")

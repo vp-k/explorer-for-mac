@@ -19,15 +19,8 @@ enum DragPolicy {
         if wantsCopy { return mask.contains(.copy) ? .copy : [] }
         let sameFolder = urls.allSatisfy { Location.key($0.deletingLastPathComponent()) == destKey }
         if sameFolder { return [] }
-        if sameVolume(urls[0], destination) { return .move }
+        if urls.allSatisfy({ FileOperations.isSameVolume($0, destination) }) { return .move }
         return mask.contains(.copy) ? .copy : .move
-    }
-
-    private static func sameVolume(_ a: URL, _ b: URL) -> Bool {
-        let key: Set<URLResourceKey> = [.volumeIdentifierKey]
-        guard let va = try? a.resourceValues(forKeys: key).volumeIdentifier as? NSObject,
-              let vb = try? b.resourceValues(forKeys: key).volumeIdentifier as? NSObject else { return false }
-        return va.isEqual(vb)
     }
 }
 

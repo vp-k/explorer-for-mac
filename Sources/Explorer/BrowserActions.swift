@@ -90,6 +90,17 @@ extension BrowserViewController {
         }
     }
 
+    /// Cmd+⌥+V: 대지의 항목을 여기로 이동한다. Finder 에서 Cmd+C 한 파일도 옮긴다.
+    @objc func pasteMove(_ sender: Any?) {
+        guard !isThisMac, let content = ClipboardBridge.readForPaste() else { return }
+        let destination = currentURL
+        Task {
+            if await performTransfer(content.urls, to: destination, move: true) {
+                ClipboardBridge.finishCutPaste()
+            }
+        }
+    }
+
     @objc func copyPath(_ sender: Any?) {
         ClipboardBridge.copyPaths(targetURLs(sender))
     }
@@ -99,22 +110,24 @@ extension BrowserViewController {
         Task { await performTransfer(urls, to: destination, move: move) }
     }
 
-    /// 충돌이 있으면 대화상자(F8)로 정책을 묻고 복사·이동한다. 성공하면 true.
+    /// 충돌이 있으면 항목마다 대화상자(F8)로 정책을 묻고 복사·이동한다. 성공하면 true.
     @discardableResult
     func performTransfer(_ urls: [URL], to destination: URL, move: Bool) async -> Bool {
         guard !urls.isEmpty else { return false }
-        var policy = ConflictPolicy.keepBoth
         let conflicts = ConflictDialog.conflicts(for: urls, in: destination)
+        var decisions: [String: ConflictPolicy] = [:]
         if !conflicts.isEmpty {
-            guard let chosen = await ConflictDialog.ask(conflicts: conflicts, total: urls.count,
-                                                        destination: destination, move: move,
-                                                        window: view.window) else { return false }
-            policy = chosen
+            guard let chosen = await ConflictDialog.decide(conflicts: conflicts, total: urls.count,
+                                                           destination: destination, move: move,
+                                                           window: view.window) else { return false }
+            decisions = chosen
         }
-        let chosenPolicy = policy
+        // 미리 묻지 못한 충돌(같은 이름 원본 두 개 등)은 덮어쓰지 않고 둘 다 유지한다.
+        let policies = decisions
         let result = await runOperation {
-            move ? try FileOperations.move(urls, to: destination, conflict: chosenPolicy)
-                 : try FileOperations.copy(urls, to: destination, conflict: chosenPolicy)
+            let policy: (URL) -> ConflictPolicy = { policies[Location.key($0)] ?? .keepBoth }
+            return move ? try FileOperations.move(urls, to: destination, conflict: policy)
+                        : try FileOperations.copy(urls, to: destination, conflict: policy)
         }
         return result != nil
     }
@@ -178,6 +191,8 @@ extension BrowserViewController {
     // MARK: 실행 취소 (F7)
 
     @objc func undo(_ sender: Any?) {
+        // 주소창·이름 편집 중의 Cmd+Z 는 글자 실행 취소다.
+        if let manager = textUndoManager { manager.undo(); return }
         guard let record = state.popUndo() else { NSSound.beep(); return }
         Task {
             do {
@@ -193,6 +208,7 @@ extension BrowserViewController {
     }
 
     @objc func redo(_ sender: Any?) {
+        if let manager = textUndoManager { manager.redo(); return }
         guard let record = state.popRedo() else { NSSound.beep(); return }
         Task {
             do {
@@ -205,6 +221,12 @@ extension BrowserViewController {
             }
             reload()
         }
+    }
+
+    /// 글자 입력 중이면 그 입력 칸의 실행 취소 관리자.
+    private var textUndoManager: UndoManager? {
+        guard GlobalKeyHandler.isEditingText(in: view.window) else { return nil }
+        return view.window?.firstResponder?.undoManager
     }
 
     // MARK: 압축 (F11)
@@ -349,13 +371,13 @@ extension BrowserViewController: NSMenuItemValidation {
         case #selector(copyPath(_:)), #selector(revealInFinder(_:)), #selector(showProperties(_:)):
             return !isThisMac || hasSelection
         case #selector(renameSelection(_:)): return selected.count == 1 && !isThisMac
-        case #selector(paste(_:)): return ClipboardBridge.canPaste && !isThisMac
+        case #selector(paste(_:)), #selector(pasteMove(_:)): return ClipboardBridge.canPaste && !isThisMac
         case #selector(newFolder(_:)), #selector(newTextFile(_:)),
              #selector(invertSelection(_:)), #selector(focusSearch(_:)):
             return !isThisMac
         case #selector(extractSelection(_:)): return selected.contains { $0.fileExtension == "zip" }
-        case #selector(undo(_:)): return !state.undoStack.isEmpty
-        case #selector(redo(_:)): return !state.redoStack.isEmpty
+        case #selector(undo(_:)): return textUndoManager.map(\.canUndo) ?? !state.undoStack.isEmpty
+        case #selector(redo(_:)): return textUndoManager.map(\.canRedo) ?? !state.redoStack.isEmpty
         case #selector(togglePin(_:)):
             return menuItem.representedObject is URL || selected.contains(where: \.isNavigable)
         case #selector(setViewModeFromMenu(_:)):
