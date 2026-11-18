@@ -171,7 +171,7 @@ final class FileOperationsRegressionTests: TemporaryDirectoryTestCase {
         }
     }
 
-    func testBatchDuplicateDirectoriesAreKeptSeparatelyAndUndo() throws {
+    func testBatchDuplicateDirectoriesMergeAndUndo() throws {
         for moving in [false, true] {
             let prefix = String(moving)
             let a = try folder("\(prefix)/first/tree")
@@ -180,9 +180,9 @@ final class FileOperationsRegressionTests: TemporaryDirectoryTestCase {
             try file("\(prefix)/second/tree/b", "B")
             let destination = try folder("\(prefix)/destination")
             let result = try transfer([a, b], to: destination, moving: moving, policy: .replace)
-            XCTAssertEqual(result.resultURLs.map(\.lastPathComponent), ["tree", "tree (2)"])
+            XCTAssertEqual(result.resultURLs.map(\.lastPathComponent), ["tree"])
             XCTAssertEqual(try text(destination.appendingPathComponent("tree/a")), "A")
-            XCTAssertEqual(try text(destination.appendingPathComponent("tree (2)/b")), "B")
+            XCTAssertEqual(try text(destination.appendingPathComponent("tree/b")), "B")
             _ = try undo(result)
             XCTAssertEqual(try text(a.appendingPathComponent("a")), "A")
             XCTAssertEqual(try text(b.appendingPathComponent("b")), "B")

@@ -1,5 +1,6 @@
 import Foundation
 import CoreServices
+import Darwin
 
 /// 잘라내기/복사 상태. 시스템 대지(NSPasteboard) 연동은 UI 쪽 책임이고,
 /// 여기서는 "마지막으로 잘라낸 URL 목록" 을 기억해 붙여넣기 시 이동인지 판단한다.
@@ -255,7 +256,8 @@ public final class PinnedFolderStore: @unchecked Sendable {
     }
 }
 
-/// FSEvents 파일 단위 감시. 하위 파일 내용/메타데이터 변경도 main 큐에서 알린다 (0.3초 디바운스).
+/// FSEvents 파일 단위 감시. 루트와 직속 자식의 내용/메타데이터 변경을 main 큐에서 알린다 (0.3초 디바운스).
+/// 심볼릭 링크는 감시 시작 전에 해석하며, 깊은 하위 트리의 이벤트는 무시한다.
 /// 감시 경로 또는 상위 폴더의 삭제/이름 변경도 onChange 를 호출한다.
 /// 경로를 자동으로 따라가지 않으므로 호출자는 경로 유효성을 확인하고 stop 후 새 감시자를 만들어야 한다.
 public final class DirectoryWatcher: @unchecked Sendable {
@@ -268,19 +270,33 @@ public final class DirectoryWatcher: @unchecked Sendable {
 
     private final class CallbackContext {
         weak var watcher: DirectoryWatcher?
+        let rootPath: String
         let onChange: @Sendable () -> Void
-        init(watcher: DirectoryWatcher, onChange: @escaping @Sendable () -> Void) {
+        init(watcher: DirectoryWatcher, rootPath: String, onChange: @escaping @Sendable () -> Void) {
             self.watcher = watcher
+            self.rootPath = rootPath
             self.onChange = onChange
+        }
+
+        func includes(path: String, flags: FSEventStreamEventFlags) -> Bool {
+            if flags & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 { return true }
+            let url = URL(fileURLWithPath: path)
+            return url.path == rootPath || url.deletingLastPathComponent().path == rootPath
         }
     }
 
     public init(url: URL, onChange: @escaping @Sendable () -> Void) {
+        let url = url.standardizedFileURL.resolvingSymlinksInPath()
         guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
             stopped = true
             return
         }
-        let holder = CallbackContext(watcher: self, onChange: onChange)
+        // FSEvents reports POSIX paths, including /private/var even when Foundation abbreviates it
+        // to /var. realpath keeps comparison stable after an event's file has already been deleted.
+        guard let resolved = realpath(url.path, nil) else { stopped = true; return }
+        let rootPath = String(cString: resolved)
+        free(resolved)
+        let holder = CallbackContext(watcher: self, rootPath: rootPath, onChange: onChange)
         var context = FSEventStreamContext(
             version: 0, info: Unmanaged.passUnretained(holder).toOpaque(),
             retain: { pointer in
@@ -292,13 +308,19 @@ public final class DirectoryWatcher: @unchecked Sendable {
             }, copyDescription: nil
         )
         let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot |
-                                            kFSEventStreamCreateFlagNoDefer)
+                                            kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagUseCFTypes)
         let createdStream = withExtendedLifetime(holder) {
-            FSEventStreamCreate(nil, { _, info, _, _, _, _ in
+            FSEventStreamCreate(nil, { _, info, count, eventPaths, eventFlags, _ in
                 guard let info else { return }
                 let holder = Unmanaged<CallbackContext>.fromOpaque(info).takeUnretainedValue()
-                holder.watcher?.schedule(holder.onChange)
-            }, &context, [url.standardizedFileURL.resolvingSymlinksInPath().path] as CFArray,
+                let paths = unsafeBitCast(eventPaths, to: NSArray.self)
+                for index in 0..<count {
+                    if let path = paths[index] as? String, holder.includes(path: path, flags: eventFlags[index]) {
+                        holder.watcher?.schedule(holder.onChange)
+                        break
+                    }
+                }
+            }, &context, [rootPath] as CFArray,
                FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.05, flags)
         }
         guard let stream = createdStream else {

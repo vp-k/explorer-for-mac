@@ -3,6 +3,79 @@ import XCTest
 @testable import ExplorerCore
 
 final class DirectoryWatcherTests: TemporaryDirectoryTestCase {
+    func testWatchesResolvedSymlinkAndSystemTmpPaths() throws {
+        let real = try folder("real")
+        let link = root.appendingPathComponent("link")
+        try manager.createSymbolicLink(at: link, withDestinationURL: real)
+        let tmpRoot = URL(fileURLWithPath: "/tmp").appendingPathComponent("ExplorerCoreWatcher-\(UUID().uuidString)")
+        try manager.createDirectory(at: tmpRoot, withIntermediateDirectories: false)
+        defer { try? manager.removeItem(at: tmpRoot) }
+        for (index, watched) in [link, tmpRoot].enumerated() {
+            let change = expectation(description: "Resolved path \(index)")
+            let signal = WatchSignal(change)
+            let watcher = DirectoryWatcher(url: watched) { signal.receive() }
+            defer { watcher.stop() }
+            settleEvents()
+            signal.arm()
+            try Data("created".utf8).write(to: watched.appendingPathComponent("new\(index).txt"))
+            wait(for: [change], timeout: 4)
+        }
+    }
+
+    func testIgnoresDeepSubtreeCreationContentMetadataRenameAndDeletion() throws {
+        try folder("child/a/b/c")
+        let existing = try file("child/a/b/c/existing", "before")
+        let change = expectation(description: "Deep events are ignored")
+        change.isInverted = true
+        let signal = WatchSignal(change)
+        let watcher = DirectoryWatcher(url: root) { signal.receive() }
+        defer { watcher.stop() }
+        settleEvents()
+        signal.arm()
+        try file("child/a/b/c/new", "new")
+        try Data("after".utf8).write(to: existing)
+        try manager.setAttributes([.modificationDate: Date(timeIntervalSince1970: 100)], ofItemAtPath: existing.path)
+        let renamed = existing.deletingLastPathComponent().appendingPathComponent("renamed")
+        try manager.moveItem(at: existing, to: renamed)
+        try manager.removeItem(at: renamed)
+        wait(for: [change], timeout: 1.5)
+        XCTAssertEqual(signal.count, 0)
+    }
+
+    func testDirectDirectoryMetadataAndWatchedRootMetadataStillNotify() throws {
+        let child = try folder("child")
+        for changed in [root!, child] {
+            let change = expectation(description: "Visible directory metadata changed")
+            let signal = WatchSignal(change)
+            let watcher = DirectoryWatcher(url: root) { signal.receive() }
+            defer { watcher.stop() }
+            settleEvents()
+            signal.arm()
+            try manager.setAttributes([.modificationDate: Date(timeIntervalSince1970: 100)], ofItemAtPath: changed.path)
+            wait(for: [change], timeout: 4)
+        }
+    }
+
+    func testAncestorRenameAndSymlinkRootDeletionStillNotify() throws {
+        for renameAncestor in [true, false] {
+            let prefix = String(renameAncestor)
+            let watched = try folder("\(prefix)/parent/watched")
+            let link = root.appendingPathComponent("link-\(prefix)")
+            try manager.createSymbolicLink(at: link, withDestinationURL: watched)
+            let change = expectation(description: "Resolved root invalidated")
+            let signal = WatchSignal(change)
+            let watcher = DirectoryWatcher(url: link) { signal.receive() }
+            defer { watcher.stop() }
+            settleEvents()
+            signal.arm()
+            if renameAncestor {
+                try manager.moveItem(at: watched.deletingLastPathComponent(),
+                                     to: root.appendingPathComponent("\(prefix)/renamed-parent"))
+            } else { try manager.removeItem(at: watched) }
+            wait(for: [change], timeout: 4)
+        }
+    }
+
     func testDetectsExistingFileContentChangesOnMainQueue() throws {
         let existing = try file("existing.txt", "before")
         let change = expectation(description: "Content changed")

@@ -38,7 +38,7 @@ public enum FileOperationRecord: Sendable, Equatable {
     case copied(created: [URL])
     case moved(pairs: [MovePair])
     case renamed(from: URL, to: URL)
-    case trashed(pairs: [MovePair])   // from: 원래 위치, to: 휴지통 위치
+    case trashed(pairs: [MovePair])   // from: 원래 위치, to: 휴지통 또는 같은 볼륨의 숨김 백업 위치
     case created(URL)
     /// 순서대로 완료한 작업들. 실행 취소는 역순으로 수행하며 덮어쓴 항목도 복구한다.
     indirect case compound(records: [FileOperationRecord])
@@ -67,7 +67,7 @@ public enum FileOperations {
     }
 
     /// 폴더끼리는 재귀 병합하고 파일/패키지 충돌마다 정책을 선택한다.
-    /// 같은 폴더 복사와 배치 내 같은 이름의 둘째 원본부터는 질문 없이 복사본을 만든다.
+    /// 같은 폴더 복사와 배치 내 파일 이름 충돌은 질문 없이 복사본을 만든다. 같은 이름 폴더는 모두 병합한다.
     public static func copy(_ sources: [URL], to destination: URL, conflict: (URL) -> ConflictPolicy) throws -> OperationResult {
         try transfer(sources, to: destination, moving: false, conflict: conflict)
     }
@@ -77,7 +77,7 @@ public enum FileOperations {
     }
 
     /// 폴더끼리는 재귀 병합하고 파일/패키지 충돌마다 정책을 선택한다.
-    /// 배치 안에서 이미 사용한 이름은 질문 없이 둘 다 유지한다.
+    /// 배치 안에서 이미 사용한 파일 이름은 질문 없이 둘 다 유지한다. 같은 이름 폴더는 모두 병합한다.
     public static func move(_ sources: [URL], to destination: URL, conflict: (URL) -> ConflictPolicy) throws -> OperationResult {
         try transfer(sources, to: destination, moving: true, conflict: conflict)
     }
@@ -210,13 +210,23 @@ public enum FileOperations {
     /// 실행 취소. 되돌린 뒤의 기록(다시 실행용)을 돌려준다.
     @discardableResult
     public static func undo(_ record: FileOperationRecord) throws -> FileOperationRecord? {
+        try undo(record, trashItem: trashItemURL)
+    }
+
+    // Internal injection point to exercise filesystems that cannot provide a Trash directory.
+    static func undo(_ record: FileOperationRecord, trashItem: @escaping (URL) throws -> URL) throws -> FileOperationRecord? {
+        try performUndo(record, excluding: backupExclusions(for: record), trashItem: trashItem)
+    }
+
+    private static func performUndo(_ record: FileOperationRecord, excluding: [URL],
+                                    trashItem: @escaping (URL) throws -> URL) throws -> FileOperationRecord? {
         switch record {
         case .compound(let records):
-            return try undoCompound(records)
+            return try undoCompound(records, excluding: excluding, trashItem: trashItem)
         case .copied(let urls):
-            return try trash(urls).record
+            return try preserveForUndo(urls, excluding: excluding, trashItem: trashItem)
         case .created(let url):
-            return try trash([url]).record
+            return try preserveForUndo([url], excluding: excluding, trashItem: trashItem)
         case .renamed(let from, let to):
             try requireDirectory(from.deletingLastPathComponent())
             return try rename(to, to: from.lastPathComponent).record
@@ -372,14 +382,29 @@ public enum FileOperations {
     }
 
     private struct TransferState {
+        let sources: [URL]
+        var backupExclusions: [URL]
+        let trashItem: (URL) throws -> URL
         var records: [FileOperationRecord] = []
         var skipped: [URL] = []
         var rollback: [() throws -> Void] = []
+        var names = Set<String>()
+        var writtenItems: [URL] = []
+
+        mutating func reserve(_ target: URL) -> Bool {
+            let parent = target.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
+            let caseSensitive = (try? parent.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+                .volumeSupportsCaseSensitiveNames) == true
+            let name = target.lastPathComponent.precomposedStringWithCanonicalMapping
+            let path = parent.appendingPathComponent(name).path.precomposedStringWithCanonicalMapping
+            return !names.insert(caseSensitive ? path : path.lowercased()).inserted
+        }
     }
 
     /// Every completed step has an inverse, including displaced items and merged source directories.
-    private static func transfer(_ sources: [URL], to destination: URL, moving: Bool,
-                                 conflict: (URL) -> ConflictPolicy) throws -> OperationResult {
+    static func transfer(_ sources: [URL], to destination: URL, moving: Bool,
+                         conflict: (URL) -> ConflictPolicy,
+                         trashItem: @escaping (URL) throws -> URL = trashItemURL) throws -> OperationResult {
         try requireDirectory(destination)
         for source in sources {
             try requireItem(source)
@@ -391,15 +416,10 @@ public enum FileOperations {
                 throw FileOperationError.destinationContainsSource(target.path)
             }
         }
-        var state = TransferState()
+        var state = TransferState(sources: sources, backupExclusions: sources, trashItem: trashItem)
         var urls: [URL] = []
-        var names = Set<String>()
-        let caseSensitive = (try? destination.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
-            .volumeSupportsCaseSensitiveNames) == true
         do {
             for source in sources {
-                let normalized = source.lastPathComponent.precomposedStringWithCanonicalMapping
-                let duplicate = !names.insert(caseSensitive ? normalized : normalized.lowercased()).inserted
                 let sameParent = sameLocation(source.deletingLastPathComponent(), destination)
                 if moving && sameParent { state.skipped.append(source); continue }
                 let wholeName = hasWholeDirectoryName(source)
@@ -409,9 +429,9 @@ public enum FileOperations {
                     let name = availableName("\(parts.stem) - 복사본\(parts.suffix)", in: destination, isDirectory: wholeName)
                     target = destination.appendingPathComponent(name)
                 }
-                let alreadyWritten = urls.contains { sameLocation($0, target) }
-                if let completed = try transferItem(source, to: target, moving: moving, keepBoth: duplicate || alreadyWritten,
-                                                    conflict: conflict, state: &state) {
+                if let completed = try transferItem(source, to: target, moving: moving,
+                                                    conflict: conflict, state: &state),
+                   !urls.contains(where: { sameLocation($0, completed) }) {
                     urls.append(completed)
                 }
             }
@@ -421,15 +441,29 @@ public enum FileOperations {
         return OperationResult(record: combinedRecord(state.records), resultURLs: urls, skipped: state.skipped)
     }
 
-    private static func transferItem(_ source: URL, to proposed: URL, moving: Bool, keepBoth: Bool = false,
+    private static func transferItem(_ source: URL, to proposed: URL, moving: Bool,
                                      conflict: (URL) -> ConflictPolicy, state: inout TransferState) throws -> URL? {
         var target = proposed
+        state.backupExclusions.append(target)
+        let duplicate = state.reserve(target)
         if exists(target) {
-            if !keepBoth && hasWholeDirectoryName(source) && hasWholeDirectoryName(target) {
+            // Finder metadata never needs a conflict dialog. Preserve the source for undo when moving.
+            if source.lastPathComponent == ".DS_Store", target.lastPathComponent == ".DS_Store",
+               !isDirectoryItem(source), !isDirectoryItem(target), !sameLocation(source, target) {
+                if moving { try displaceToTrash(source, state: &state) }
+                return nil
+            }
+            let selectedSource = state.sources.contains { sameLocation($0, target) }
+            if !selectedSource && hasWholeDirectoryName(source) && hasWholeDirectoryName(target) {
                 guard !sameLocation(source, target) else { throw FileOperationError.alreadyExists(target.path) }
                 try mergeDirectory(source, into: target, moving: moving, conflict: conflict, state: &state)
                 return target
             }
+            // A whole directory transferred earlier also owns every child now being merged into it.
+            let alreadyWritten = state.writtenItems.contains {
+                sameLocation($0, target) || (isDirectoryItem($0) && contains(target, in: $0))
+            }
+            let keepBoth = selectedSource || duplicate || alreadyWritten
             switch keepBoth ? .keepBoth : conflict(target) {
             case .skip: state.skipped.append(source); return nil
             case .keepBoth:
@@ -441,7 +475,10 @@ public enum FileOperations {
                 try displaceToTrash(target, state: &state)
             }
         }
+        state.backupExclusions.append(target)
         try transferUnoccupiedItem(source, to: target, moving: moving, state: &state)
+        _ = state.reserve(target)
+        state.writtenItems.append(target)
         return target
     }
 
@@ -454,19 +491,98 @@ public enum FileOperations {
                                  conflict: conflict, state: &state)
         }
         if moving, try manager.contentsOfDirectory(atPath: source.path).isEmpty {
-            // Keep the empty container in Trash so undo restores its metadata before restoring children.
+            // Preserve the empty container so undo restores its metadata before restoring children.
             try displaceToTrash(source, state: &state)
         }
     }
 
     private static func displaceToTrash(_ url: URL, state: inout TransferState) throws {
-        let result = try trash([url])
-        guard case .trashed(let pairs) = result.record else {
-            throw FileOperationError.failed("휴지통 기록을 확인할 수 없습니다: \(url.path)")
+        let pair = try preserveForUndo(url, excluding: state.backupExclusions, trashItem: state.trashItem)
+        state.records.append(.trashed(pairs: [pair]))
+        state.rollback.append { try manager.moveItem(at: pair.to, to: pair.from) }
+    }
+
+    private static func trashItemURL(_ url: URL) throws -> URL {
+        let parent = url.deletingLastPathComponent()
+        let metadata = parent.appendingPathComponent(".DS_Store")
+        // macOS may remove the parent's .DS_Store when trashing its last ordinary item.
+        // Stage under a hidden directory so this cleanup never touches retained metadata.
+        let staging = parent.appendingPathComponent(".explorer-trash-\(UUID().uuidString)", isDirectory: true)
+        let stageItem = url.lastPathComponent != ".DS_Store" && exists(metadata) && !isDirectoryItem(metadata)
+        let input: URL
+        if stageItem {
+            try manager.createDirectory(at: staging, withIntermediateDirectories: false)
+            do {
+                input = staging.appendingPathComponent(url.lastPathComponent)
+                try manager.moveItem(at: url, to: input)
+            } catch { try? manager.removeItem(at: staging); throw error }
+        } else { input = url }
+        defer {
+            if stageItem, (try? manager.contentsOfDirectory(atPath: staging.path).isEmpty) == true {
+                try? manager.removeItem(at: staging)
+            }
         }
-        state.records.append(.trashed(pairs: pairs))
-        for pair in pairs {
-            state.rollback.append { try manager.moveItem(at: pair.to, to: pair.from) }
+        var result: NSURL?
+        do { try manager.trashItem(at: input, resultingItemURL: &result) }
+        catch {
+            if stageItem { try rollbackMoves([MovePair(from: url, to: input)], after: error) }
+            throw error
+        }
+        guard let target = result as URL? else {
+            throw FileOperationError.failed("휴지통 위치를 확인할 수 없습니다: \(url.path)")
+        }
+        return target
+    }
+
+    private static func preserveForUndo(_ url: URL, excluding: [URL],
+                                       trashItem: (URL) throws -> URL) throws -> MovePair {
+        if url.lastPathComponent == ".DS_Store" {
+            return try hiddenBackup(url, excluding: excluding)
+        }
+        do { return MovePair(from: url, to: try trashItem(url)) }
+        catch {
+            let trashError = error
+            guard exists(url) else { throw trashError }
+            do { return try hiddenBackup(url, excluding: excluding) }
+            catch {
+                throw FileOperationError.failed("\(trashError.localizedDescription)\n숨김 백업 실패: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private static func hiddenBackup(_ url: URL, excluding: [URL]) throws -> MovePair {
+        var parent = url.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
+        // Keep backups outside every source/destination tree: merging must not pick them up,
+        // and restoring or removing a container must not relocate another record's backup.
+        while excluding.contains(where: { contains(parent, in: $0) }) {
+            guard parent.path != "/" else { throw FileOperationError.failed("안전한 백업 폴더가 없습니다: \(url.path)") }
+            parent.deleteLastPathComponent()
+        }
+        guard isSameVolume(url, parent) else {
+            throw FileOperationError.failed("같은 볼륨에 백업 폴더가 없습니다: \(url.path)")
+        }
+        let backup = parent.appendingPathComponent(".explorer-backup-\(UUID().uuidString)")
+        try manager.moveItem(at: url, to: backup)
+        return MovePair(from: url, to: backup)
+    }
+
+    private static func preserveForUndo(_ urls: [URL], excluding: [URL],
+                                       trashItem: (URL) throws -> URL) throws -> FileOperationRecord? {
+        for url in urls { try requireItem(url) }
+        var pairs: [MovePair] = []
+        do {
+            for url in urls { pairs.append(try preserveForUndo(url, excluding: excluding, trashItem: trashItem)) }
+        } catch { try rollbackMoves(pairs, after: error) }
+        return pairs.isEmpty ? nil : .trashed(pairs: pairs)
+    }
+
+    private static func backupExclusions(for record: FileOperationRecord) -> [URL] {
+        switch record {
+        case .copied(let urls): return urls
+        case .created(let url): return [url]
+        case .moved(let pairs), .trashed(let pairs): return pairs.flatMap { [$0.from, $0.to] }
+        case .renamed(let from, let to): return [from, to]
+        case .compound(let records): return records.flatMap { backupExclusions(for: $0) }
         }
     }
 
@@ -489,6 +605,16 @@ public enum FileOperations {
     private static func combinedRecord(_ records: [FileOperationRecord]) -> FileOperationRecord? {
         guard !records.isEmpty else { return nil }
         if records.count == 1 { return records[0] }
+        // A directory copied first can receive more batch children through merging. Its inverse
+        // must run after the child inverses; flattening these into one batch loses that ordering.
+        for (index, record) in records.enumerated() {
+            let paths = backupExclusions(for: record)
+            if records[..<index].contains(where: { earlier in
+                backupExclusions(for: earlier).contains { parent in
+                    paths.contains { contains($0, in: parent) || contains(parent, in: $0) }
+                }
+            }) { return .compound(records: records) }
+        }
         if records.allSatisfy({ if case .copied = $0 { return true }; return false }) {
             return .copied(created: records.flatMap { if case .copied(let urls) = $0 { return urls }; return [] })
         }
@@ -498,16 +624,19 @@ public enum FileOperations {
         return .compound(records: records)
     }
 
-    private static func undoCompound(_ records: [FileOperationRecord]) throws -> FileOperationRecord? {
+    private static func undoCompound(_ records: [FileOperationRecord], excluding: [URL],
+                                     trashItem: @escaping (URL) throws -> URL) throws -> FileOperationRecord? {
         // Check before moving anything into Trash: a missing backup's old name could otherwise be reused.
         for record in records { try requireUndoItems(record) }
         var inverses: [FileOperationRecord] = []
         do {
             for record in records.reversed() {
-                if let inverse = try undo(record) { inverses.append(inverse) }
+                if let inverse = try performUndo(record, excluding: excluding, trashItem: trashItem) { inverses.append(inverse) }
             }
         } catch {
-            try rollBack(inverses.map { record in { _ = try undo(record) } }, after: error)
+            try rollBack(inverses.map { record in
+                { _ = try performUndo(record, excluding: excluding, trashItem: trashItem) }
+            }, after: error)
         }
         // These steps may share paths (restoring an old item after removing its replacement).
         // Preserve their order rather than collapsing them into a batch of independent moves.
