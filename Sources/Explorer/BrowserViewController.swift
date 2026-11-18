@@ -1,0 +1,542 @@
+import AppKit
+import ExplorerCore
+
+/// V3 보기 방식. 값은 Cmd+1~4 와 같다.
+enum ViewMode: Int, CaseIterable {
+    case details = 1, list, mediumIcons, largeIcons
+
+    var title: String {
+        switch self {
+        case .details: return "자세히"
+        case .list: return "목록"
+        case .mediumIcons: return "보통 아이콘"
+        case .largeIcons: return "큰 아이콘"
+        }
+    }
+}
+
+/// 탭 하나의 화면. 주소 표시줄, 명령 모음, 탐색 창, 파일 목록, 미리 보기 창, 상태 표시줄.
+@MainActor
+final class BrowserViewController: NSViewController {
+    let state = AppState.shared
+    private(set) var history: NavigationHistory
+    var currentURL: URL { history.current }
+    var isThisMac: Bool { Location.isThisMac(currentURL) }
+    var isSearching: Bool { searchQuery != nil }
+
+    var sortOrder = ExplorerCore.SortOrder()
+    private(set) var viewMode: ViewMode = .details
+    private(set) var previewVisible = false
+    private var rawItems: [FileItem] = []
+    private var searchQuery: String?
+    private var search: FileSearch?
+    private var watcher: DirectoryWatcher?
+    private var loadGeneration = 0
+    private var didLayoutSplit = false
+
+    // 화면 요소
+    private lazy var backButton = UI.toolButton("arrow.left", tip: "뒤로 (⌘[)", target: self, action: #selector(goBack(_:)))
+    private lazy var forwardButton = UI.toolButton("arrow.right", tip: "앞으로 (⌘])", target: self, action: #selector(goForward(_:)))
+    private lazy var upButton = UI.toolButton("arrow.up", tip: "상위 폴더 (⌥↑)", target: self, action: #selector(goUp(_:)))
+    private lazy var refreshButton = UI.toolButton("arrow.clockwise", tip: "새로 고침 (F5)", target: self, action: #selector(refresh(_:)))
+    let addressBar = AddressBar()
+    let searchField = NSSearchField()
+    private(set) lazy var commandBar = CommandBar(browser: self)
+    let navPane = NavigationPane()
+    let fileList = FileListController()
+    let thisMacView = ThisMacView()
+    let previewPane = PreviewPane()
+    let statusBar = StatusBar()
+    private let splitView = NSSplitView()
+    private let centerContainer = NSView()
+
+    init(url: URL) {
+        history = NavigationHistory(start: Location.isThisMac(url) ? url : url.standardizedFileURL)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // MARK: 화면 구성
+
+    override func loadView() {
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 1180, height: 720))
+        buildLayout()
+    }
+
+    private func buildLayout() {
+        let navButtons = NSStackView(views: [backButton, forwardButton, upButton, refreshButton])
+        navButtons.spacing = 2
+
+        searchField.placeholderString = "검색"
+        searchField.sendsSearchStringImmediately = false
+        searchField.target = self
+        searchField.action = #selector(searchFieldChanged(_:))
+        searchField.setAccessibilityLabel("검색 상자")
+
+        let top = NSStackView(views: [navButtons, addressBar, searchField])
+        top.orientation = .horizontal
+        top.spacing = 8
+        top.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+        addressBar.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        searchField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+
+        splitView.isVertical = true
+        splitView.dividerStyle = .thin
+        splitView.autosaveName = "ExplorerSplit"
+        splitView.addArrangedSubview(navPane)
+        splitView.addArrangedSubview(centerContainer)
+        splitView.addArrangedSubview(previewPane)
+        splitView.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
+        splitView.setHoldingPriority(NSLayoutConstraint.Priority(240), forSubviewAt: 1)
+        splitView.setHoldingPriority(NSLayoutConstraint.Priority(255), forSubviewAt: 2)
+        navPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
+        centerContainer.widthAnchor.constraint(greaterThanOrEqualToConstant: 280).isActive = true
+        previewPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        previewPane.isHidden = true
+
+        UI.pin(fileList.containerView, to: centerContainer)
+        UI.pin(thisMacView, to: centerContainer)
+        thisMacView.isHidden = true
+
+        let sep1 = NSBox(), sep2 = NSBox()
+        sep1.boxType = .separator
+        sep2.boxType = .separator
+
+        var previousBottom = view.topAnchor
+        for subview in [top, commandBar, sep1, splitView, sep2, statusBar] as [NSView] {
+            subview.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(subview)
+            NSLayoutConstraint.activate([
+                subview.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                subview.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                subview.topAnchor.constraint(equalTo: previousBottom),
+            ])
+            previousBottom = subview.bottomAnchor
+        }
+        NSLayoutConstraint.activate([
+            top.heightAnchor.constraint(equalToConstant: 38),
+            commandBar.heightAnchor.constraint(equalToConstant: 34),
+            statusBar.heightAnchor.constraint(equalToConstant: 24),
+            statusBar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        fileList.delegate = self
+        fileList.showExtensions = state.showExtensions
+        fileList.updateSortIndicator(sortOrder)
+
+        addressBar.onNavigate = { [weak self] url in self?.navigate(to: url) }
+        addressBar.onSubmit = { [weak self] text in self?.submitAddress(text) }
+        addressBar.onEditingEnded = { [weak self] in self?.fileList.focus() }
+
+        navPane.onNavigate = { [weak self] url in self?.navigate(to: url) }
+        navPane.onOpenInNewTab = { [weak self] url in self?.openTab(at: url) }
+        navPane.onDrop = { [weak self] urls, folder, operation in
+            self?.transfer(urls, to: folder, move: operation == .move)
+            return self != nil
+        }
+        navPane.onProperties = { url in PropertiesWindowController.show(for: [url]) }
+        navPane.onTrash = { [weak self] urls in
+            Task { await self?.runOperation { try FileOperations.trash(urls) } }
+        }
+        navPane.reloadAll()
+
+        thisMacView.onOpen = { [weak self] url in self?.navigate(to: url) }
+        statusBar.onModeChange = { [weak self] mode in self?.setViewMode(mode) }
+
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(settingsDidChange(_:)), name: AppState.settingsChanged, object: nil)
+        center.addObserver(self, selector: #selector(clipboardDidChange(_:)), name: AppState.clipboardChanged, object: nil)
+        center.addObserver(self, selector: #selector(pinsDidChange(_:)), name: AppState.pinsChanged, object: nil)
+        center.addObserver(self, selector: #selector(volumesDidChange(_:)), name: AppState.volumesChanged, object: nil)
+
+        didChangeLocation(selecting: [])
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        if !didLayoutSplit {
+            didLayoutSplit = true
+            if navPane.frame.width < 150 { splitView.setPosition(230, ofDividerAt: 0) }
+            fileList.focus()
+        }
+        updateChrome()
+    }
+
+    /// 창이 닫힐 때 백그라운드 작업과 감시를 멈춘다.
+    func tearDown() {
+        search?.cancel()
+        search = nil
+        watcher?.stop()
+        watcher = nil
+        loadGeneration += 1
+        previewPane.show(nil)
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    // MARK: 이동 (N1, N2, N5)
+
+    func navigate(to url: URL) {
+        let target = Location.isThisMac(url) ? url : url.standardizedFileURL
+        let from = currentURL
+        history.visit(target)
+        didChangeLocation(selecting: [from])
+    }
+
+    private func didChangeLocation(selecting: [URL]) {
+        cancelSearch(clearField: true)
+        loadCurrent(selecting: selecting)
+        updateChrome()
+    }
+
+    @objc func goBack(_ sender: Any?) {
+        let from = currentURL
+        guard history.goBack() != nil else { return }
+        didChangeLocation(selecting: [from])
+    }
+
+    @objc func goForward(_ sender: Any?) {
+        let from = currentURL
+        guard history.goForward() != nil else { return }
+        didChangeLocation(selecting: [from])
+    }
+
+    /// 루트에서 위로 가면 Windows 의 "내 PC" 처럼 내 Mac 화면으로 간다.
+    @objc func goUp(_ sender: Any?) {
+        guard !isThisMac else { return }
+        if isSearching { endSearch(); return }
+        navigate(to: AddressResolver.parent(of: currentURL) ?? Location.thisMac)
+    }
+
+    @objc func goToFolder(_ sender: Any?) {
+        guard let url = (sender as? NSMenuItem)?.representedObject as? URL else { return }
+        navigate(to: url)
+    }
+
+    func openTab(at url: URL) {
+        guard let window = view.window else { return }
+        AppDelegate.shared.openTab(in: window, at: url)
+    }
+
+    private func submitAddress(_ text: String) {
+        let input = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty else { fileList.focus(); return }
+        if ["내 Mac", "내 PC", "내 컴퓨터", "This PC", "this pc"].contains(input) {
+            navigate(to: Location.thisMac)
+            fileList.focus()
+            return
+        }
+        let base = isThisMac ? Location.home : currentURL
+        guard let url = AddressResolver.resolve(input, relativeTo: base) else {
+            let alert = NSAlert()
+            alert.messageText = "'\(input)'을(를) 찾을 수 없습니다."
+            alert.informativeText = "철자를 확인하고 다시 시도하세요."
+            alert.alertStyle = .warning
+            if let window = view.window {
+                alert.beginSheetModal(for: window) { [weak self] _ in
+                    self?.addressBar.beginEditing(text: input)
+                }
+            }
+            return
+        }
+        if (try? FileItem.load(url))?.isNavigable == true {
+            navigate(to: url)
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+        fileList.focus()
+    }
+
+    // MARK: 목록 불러오기 (N3)
+
+    /// 현재 폴더를 다시 읽는다. 검색 중이면 검색을 다시 한다.
+    func reload(selecting: [URL]? = nil, rename: URL? = nil) {
+        if let query = searchQuery {
+            startSearch(query)
+            return
+        }
+        loadCurrent(selecting: selecting ?? fileList.selectedURLs, rename: rename)
+    }
+
+    @objc func refresh(_ sender: Any?) {
+        IconCache.shared.invalidate()
+        if isThisMac { thisMacView.reload() }
+        reload()
+    }
+
+    private func loadCurrent(selecting: [URL], rename: URL? = nil) {
+        watcher?.stop()
+        watcher = nil
+        loadGeneration += 1
+        if isThisMac {
+            thisMacView.reload()
+            thisMacView.isHidden = false
+            fileList.containerView.isHidden = true
+            rawItems = []
+            fileList.setItems([], selecting: [])
+            updateStatus()
+            return
+        }
+        thisMacView.isHidden = true
+        fileList.containerView.isHidden = false
+
+        let generation = loadGeneration
+        let url = currentURL
+        let showHidden = state.showHidden
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<[FileItem], Error> in
+                Result { try DirectoryLister.contents(of: url, showHidden: showHidden) }
+            }.value
+            guard let self, generation == self.loadGeneration else { return }
+            switch result {
+            case .success(let items):
+                self.rawItems = items
+                self.applyItems(selecting: selecting)
+                self.fileList.showMessage(items.isEmpty ? "이 폴더는 비어 있습니다." : nil)
+                if let rename { self.fileList.beginRename(rename) }
+            case .failure(let error):
+                self.rawItems = []
+                self.applyItems(selecting: [])
+                self.fileList.showMessage(error.localizedDescription)
+            }
+        }
+        watcher = DirectoryWatcher(url: url) { [weak self] in
+            MainActor.assumeIsolated { self?.directoryDidChange() }
+        }
+    }
+
+    private func directoryDidChange() {
+        guard !isSearching, !fileList.isRenaming else { return }
+        IconCache.shared.invalidate()
+        reload()
+    }
+
+    /// 정렬해서 목록에 넣는다 (V2: 폴더 우선, 자연 정렬).
+    private func applyItems(selecting: [URL]) {
+        fileList.setItems(FileSorter.sorted(rawItems, by: sortOrder), selecting: selecting)
+        updateStatus()
+    }
+
+    // MARK: 검색 (S1, S2)
+
+    @objc private func searchFieldChanged(_ sender: NSSearchField) {
+        let query = sender.stringValue.trimmingCharacters(in: .whitespaces)
+        if query.isEmpty {
+            if isSearching { endSearch() }
+        } else {
+            startSearch(query)
+        }
+    }
+
+    private func startSearch(_ query: String) {
+        guard !isThisMac else { return }
+        search?.cancel()
+        watcher?.stop()
+        watcher = nil
+        loadGeneration += 1
+        let generation = loadGeneration
+        searchQuery = query
+        rawItems = []
+        fileList.showsFolderColumn = true
+        applyItems(selecting: [])
+        fileList.showMessage(nil)
+        statusBar.setActivity("검색 중…")
+        updateChrome()
+
+        let finder = FileSearch(root: currentURL, query: query, showHidden: state.showHidden)
+        search = finder
+        // 창을 닫으면 tearDown 에서 검색을 취소하므로 강한 참조로 충분하다.
+        let browser = self
+        Task.detached(priority: .userInitiated) {
+            finder.run { batch in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { browser.appendSearchResults(batch, generation: generation) }
+                }
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { browser.searchDidFinish(generation: generation) }
+            }
+        }
+    }
+
+    private func appendSearchResults(_ batch: [FileItem], generation: Int) {
+        guard generation == loadGeneration, isSearching else { return }
+        rawItems.append(contentsOf: batch)
+        applyItems(selecting: fileList.selectedURLs)
+        statusBar.setActivity("검색 중… \(rawItems.count)개 찾음")
+    }
+
+    private func searchDidFinish(generation: Int) {
+        guard generation == loadGeneration, isSearching else { return }
+        statusBar.setActivity(nil)
+        fileList.showMessage(rawItems.isEmpty ? "검색 조건과 일치하는 항목이 없습니다." : nil)
+    }
+
+    /// 검색을 끝내고 폴더 목록으로 돌아간다.
+    func endSearch() {
+        cancelSearch(clearField: true)
+        loadCurrent(selecting: [])
+        updateChrome()
+    }
+
+    private func cancelSearch(clearField: Bool) {
+        search?.cancel()
+        search = nil
+        searchQuery = nil
+        fileList.showsFolderColumn = false
+        statusBar.setActivity(nil)
+        if clearField { searchField.stringValue = "" }
+    }
+
+    // MARK: 화면 갱신
+
+    func updateChrome() {
+        backButton.isEnabled = history.canGoBack
+        forwardButton.isEnabled = history.canGoForward
+        upButton.isEnabled = !isThisMac
+        searchField.isEnabled = !isThisMac
+
+        let title: String
+        if isThisMac {
+            title = "내 Mac"
+            addressBar.setLocation(crumbs: [Breadcrumb(title: "내 Mac", url: Location.thisMac)],
+                                   path: "내 Mac", icon: UI.symbol("desktopcomputer"))
+            view.window?.representedURL = nil
+        } else {
+            let crumbs = AddressResolver.breadcrumbs(for: currentURL)
+            title = crumbs.last?.title ?? currentURL.lastPathComponent
+            addressBar.setLocation(crumbs: crumbs, path: AddressResolver.displayPath(for: currentURL),
+                                   icon: IconCache.shared.icon(for: currentURL))
+            view.window?.representedURL = currentURL
+        }
+        searchField.placeholderString = isThisMac ? "검색" : "\(title) 검색"
+        view.window?.title = isSearching ? "검색 결과 - \(title)" : title
+        navPane.select(url: currentURL)
+        updateCommandState()
+    }
+
+    func updateStatus() {
+        let selected = fileList.selectedItems
+        let bytes = selected.reduce(Int64(0)) { $0 + ($1.isNavigable ? 0 : ($1.size ?? 0)) }
+        let count = isThisMac ? thisMacView.itemCount : fileList.items.count
+        statusBar.update(count: count, selectedCount: selected.count,
+                         selectedSize: bytes > 0 ? SizeFormatter.humanSize(bytes) : nil)
+        statusBar.setMode(viewMode)
+    }
+
+    func updateCommandState() {
+        let selected = fileList.selectedItems
+        commandBar.update(hasSelection: !selected.isEmpty && !isThisMac,
+                          singleSelection: selected.count == 1 && !isThisMac,
+                          canPaste: ClipboardBridge.canPaste && !isThisMac,
+                          canCreate: !isThisMac)
+    }
+
+    func setViewMode(_ mode: ViewMode) {
+        viewMode = mode
+        fileList.mode = mode
+        statusBar.setMode(mode)
+    }
+
+    func setSortOrder(_ order: ExplorerCore.SortOrder) {
+        sortOrder = order
+        fileList.updateSortIndicator(order)
+        applyItems(selecting: fileList.selectedURLs)
+    }
+
+    func setPreviewVisible(_ visible: Bool) {
+        previewVisible = visible
+        previewPane.isHidden = !visible
+        if visible {
+            splitView.adjustSubviews()
+            splitView.setPosition(max(splitView.bounds.width - 320, 400), ofDividerAt: 1)
+            updatePreview()
+        } else {
+            previewPane.show(nil)
+        }
+    }
+
+    private func updatePreview() {
+        guard previewVisible else { return }
+        let selected = fileList.selectedItems
+        previewPane.show(selected.count == 1 ? selected[0] : nil)
+    }
+
+    // MARK: 알림
+
+    @objc private func settingsDidChange(_ note: Notification) {
+        fileList.showExtensions = state.showExtensions
+        reload()
+    }
+
+    @objc private func clipboardDidChange(_ note: Notification) {
+        fileList.refreshItemAppearance()
+        updateCommandState()
+    }
+
+    @objc private func pinsDidChange(_ note: Notification) {
+        navPane.reloadPins()
+    }
+
+    @objc private func volumesDidChange(_ note: Notification) {
+        navPane.reloadVolumes()
+        if isThisMac { thisMacView.reload() }
+    }
+
+    // MARK: 마우스 뒤로/앞으로 버튼, 스와이프 (N1)
+
+    override func otherMouseDown(with event: NSEvent) {
+        switch event.buttonNumber {
+        case 3: goBack(nil)
+        case 4: goForward(nil)
+        default: super.otherMouseDown(with: event)
+        }
+    }
+
+    override func swipe(with event: NSEvent) {
+        if event.deltaX > 0 { goBack(nil) } else if event.deltaX < 0 { goForward(nil) }
+    }
+}
+
+// MARK: - 파일 목록 위임
+
+extension BrowserViewController: FileListDelegate {
+    func fileListOpen(_ items: [FileItem], inNewTab: Bool) {
+        open(items, inNewTab: inNewTab)
+    }
+
+    func fileListSelectionDidChange() {
+        ClipboardBridge.syncWithPasteboard()
+        updateStatus()
+        updateCommandState()
+        updatePreview()
+    }
+
+    func fileListMenu(for items: [FileItem]) -> NSMenu? {
+        items.isEmpty ? backgroundMenu() : itemMenu(for: items)
+    }
+
+    func fileListRename(_ item: FileItem, to newName: String) {
+        commitRename(item, to: newName)
+    }
+
+    func fileListHandleKey(_ event: NSEvent) -> Bool {
+        handleListKey(event)
+    }
+
+    func fileListDropDestination() -> URL? {
+        isThisMac || isSearching ? nil : currentURL
+    }
+
+    func fileListDrop(_ urls: [URL], onto folder: URL, operation: NSDragOperation) -> Bool {
+        transfer(urls, to: folder, move: operation == .move)
+        return true
+    }
+
+    func fileListSortDidChange(_ order: ExplorerCore.SortOrder) {
+        setSortOrder(order)
+    }
+}

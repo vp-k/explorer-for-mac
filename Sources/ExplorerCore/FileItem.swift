@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 /// 목록에 표시되는 파일/폴더 한 항목.
 public struct FileItem: Hashable, Identifiable, Sendable {
@@ -32,10 +33,37 @@ public struct FileItem: Hashable, Identifiable, Sendable {
     public var isNavigable: Bool { isDirectory && !isPackage }
 
     /// 디스크에서 메타데이터를 읽어 만든다. 심볼릭 링크는 대상의 종류를 따른다.
-    public static func load(_ url: URL) throws -> FileItem { fatalError("TODO core") }
+    public static func load(_ url: URL) throws -> FileItem {
+        let url = url.standardizedFileURL
+        let own = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isHiddenKey])
+        let target = own.isSymbolicLink == true ? url.resolvingSymlinksInPath() : url
+        let values = try target.resourceValues(forKeys: [
+            .isDirectoryKey, .isPackageKey, .fileSizeKey, .contentModificationDateKey,
+            .creationDateKey, .contentTypeKey
+        ])
+        let directory = values.isDirectory == true
+        let package = values.isPackage == true
+        let ext = url.pathExtension.lowercased()
+        let type = values.contentType ?? UTType(filenameExtension: ext)
+        return FileItem(
+            url: url, name: url.lastPathComponent, isDirectory: directory, isPackage: package,
+            isHidden: own.isHidden == true || url.lastPathComponent.hasPrefix("."),
+            isSymlink: own.isSymbolicLink == true,
+            size: directory ? nil : values.fileSize.map(Int64.init),
+            dateModified: values.contentModificationDate, dateCreated: values.creationDate,
+            typeDescription: directory && !package ? "파일 폴더" : (type?.localizedDescription ?? "파일"),
+            fileExtension: ext
+        )
+    }
 }
 
 public enum DirectoryLister {
     /// 폴더의 직속 항목. showHidden=false 면 숨김(점 파일, hidden 플래그) 제외.
-    public static func contents(of url: URL, showHidden: Bool) throws -> [FileItem] { fatalError("TODO core") }
+    public static func contents(of url: URL, showHidden: Bool) throws -> [FileItem] {
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: [.isHiddenKey, .isDirectoryKey],
+            options: showHidden ? [] : [.skipsHiddenFiles]
+        )
+        return try urls.map { try FileItem.load($0) }.filter { showHidden || !$0.isHidden }
+    }
 }

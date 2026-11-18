@@ -16,5 +16,28 @@ public struct SortOrder: Equatable, Codable, Sendable {
 
 public enum FileSorter {
     /// 이름 비교는 자연 정렬(file2 < file10, 대소문자 무시). 동률이면 이름으로 2차 정렬.
-    public static func sorted(_ items: [FileItem], by order: SortOrder) -> [FileItem] { fatalError("TODO core") }
+    public static func sorted(_ items: [FileItem], by order: SortOrder) -> [FileItem] {
+        items.sorted { lhs, rhs in
+            if order.foldersFirst && lhs.isNavigable != rhs.isNavigable { return lhs.isNavigable }
+            let comparison: ComparisonResult
+            switch order.key {
+            case .name: comparison = compareNames(lhs.name, rhs.name)
+            case .type: comparison = compareNames(lhs.typeDescription, rhs.typeDescription)
+            case .size: comparison = compare(lhs.size ?? -1, rhs.size ?? -1)
+            case .dateModified: comparison = compare(lhs.dateModified ?? .distantPast, rhs.dateModified ?? .distantPast)
+            case .dateCreated: comparison = compare(lhs.dateCreated ?? .distantPast, rhs.dateCreated ?? .distantPast)
+            }
+            var result = comparison == .orderedSame ? compareNames(lhs.name, rhs.name) : comparison
+            if result == .orderedSame { result = lhs.url.path.compare(rhs.url.path, options: .literal) }
+            return order.ascending ? result == .orderedAscending : result == .orderedDescending
+        }
+    }
+
+    private static func compareNames(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        lhs.compare(rhs, options: [.numeric, .caseInsensitive], locale: Locale.current)
+    }
+
+    private static func compare<T: Comparable>(_ lhs: T, _ rhs: T) -> ComparisonResult {
+        lhs < rhs ? .orderedAscending : (lhs > rhs ? .orderedDescending : .orderedSame)
+    }
 }
