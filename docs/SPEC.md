@@ -42,8 +42,8 @@ macOS 에서 Windows 11 파일 탐색기와 같은 방식으로 동작하는 파
 
 | ID | 기능 | 우선 | 동작 |
 |---|---|---|---|
-| N1 | 뒤로/앞으로 | P0 | 버튼, Cmd+[ / Cmd+], Alt+←/→ 대응 ⌥←/⌥→, 마우스 뒤로/앞으로 버튼 |
-| N2 | 위로(상위 폴더) | P0 | ↑ 버튼, ⌥↑, Backspace(목록 포커스 시) |
+| N1 | 뒤로/앞으로 | P0 | 버튼, Backspace(⌫, 목록 포커스 시 = Windows 와 같음), ⌥←/⌥→, Cmd+[ / Cmd+], 마우스 뒤로/앞으로 버튼. 탭마다 독립 기록 |
+| N2 | 위로(상위 폴더) | P0 | ↑ 버튼, ⌥↑, Cmd+↑. 루트에서 비활성 |
 | N3 | 새로고침 | P0 | 버튼, F5, Cmd+R. 폴더 변경 자동 감지도 한다 |
 | N4 | 주소 표시줄 경로 버튼 | P0 | 경로 조각 클릭 시 이동. 조각 옆 `>` 클릭 시 하위 폴더 메뉴 |
 | N5 | 주소 직접 입력 | P0 | 빈 곳 클릭, Cmd+L, ⌥D, F4 로 편집 모드. 경로 입력 후 Enter. `~`, `\`, `%USERPROFILE%`, 따옴표 경로 허용. 없는 경로면 오류 알림 |
@@ -75,7 +75,7 @@ macOS 에서 Windows 11 파일 탐색기와 같은 방식으로 동작하는 파
 | F1 | 열기 | P0 | Enter, 더블클릭. 폴더는 들어가고 파일·앱은 기본 앱으로 연다 |
 | F2 | 잘라내기/복사/붙여넣기 | P0 | Cmd+X / Cmd+C / Cmd+V. 붙여넣기 시 잘라내기면 이동. Finder 와 대지 호환 |
 | F3 | 이름 바꾸기 | P0 | F2 로 인라인 편집. 확장자 제외한 부분만 선택. Enter 확정, Esc 취소 |
-| F4 | 삭제 | P0 | Delete / Cmd+Backspace → 휴지통. Shift+Delete → 확인 후 영구 삭제 |
+| F4 | 삭제 | P0 | Forward Delete(⌦ = Fn+⌫) / Cmd+⌫ / Ctrl+D → 휴지통. Shift+⌦ / Cmd+⌥+⌫ → 확인 후 영구 삭제 |
 | F5 | 새 폴더 | P0 | Cmd+Shift+N. 만든 뒤 바로 이름 편집 |
 | F6 | 새 파일 | P0 | 새로 만들기 메뉴 → 텍스트 문서. 만든 뒤 이름 편집 |
 | F7 | 실행 취소 | P1 | Cmd+Z 로 마지막 복사/이동/이름 바꾸기/삭제/만들기 되돌림, Cmd+Shift+Z 다시 실행 |
@@ -106,18 +106,23 @@ macOS 에서 Windows 11 파일 탐색기와 같은 방식으로 동작하는 파
 ## 4. 단축키 원칙
 
 macOS 관례를 지키되 Windows 키 습관도 받는다.
-Ctrl 조합은 Cmd 조합과 같게 동작한다 (Ctrl+C = Cmd+C 등).
+Ctrl 조합은 대부분 Cmd 조합과 같게 동작한다 (Ctrl+C = Cmd+C 등).
+예외: Ctrl+D 는 휴지통(Cmd+D 는 복제), Ctrl+E 는 검색, Ctrl+클릭은 macOS 대로 컨텍스트 메뉴.
+텍스트 입력 중(주소창, 이름 편집, 한글 조합 중)에는 파일 단축키를 가로채지 않는다.
 
 | 동작 | 키 |
 |---|---|
 | 열기 | Enter, Cmd+↓ |
-| 상위 폴더 | Backspace, ⌥↑, Cmd+↑ |
-| 뒤로/앞으로 | ⌥←/⌥→, Cmd+[ / Cmd+] |
+| 상위 폴더 | ⌥↑, Cmd+↑ |
+| 뒤로 | ⌫(Backspace), ⌥←, Cmd+[ |
+| 앞으로 | ⌥→, Cmd+] |
 | 이름 바꾸기 | F2 |
-| 휴지통 | Delete(⌦), Cmd+Backspace |
-| 영구 삭제 | Shift+Delete, Cmd+⌥+Backspace |
+| 휴지통 | ⌦(Fn+⌫), Cmd+⌫, Ctrl+D |
+| 영구 삭제 | Shift+⌦, Cmd+⌥+⌫ |
+| 잘라내기 후 이동 | Cmd+X → Cmd+V, 또는 Cmd+C → Cmd+⌥+V (Finder 호환) |
+| 실행 취소/다시 실행 | Cmd+Z / Ctrl+Z, Cmd+Shift+Z / Ctrl+Y |
 | 주소 표시줄 | Cmd+L, ⌥D, F4 |
-| 검색 | Cmd+F, F3 |
+| 검색 | Cmd+F, Ctrl+F, Ctrl+E, F3 |
 | 새 폴더 | Cmd+Shift+N, Ctrl+Shift+N |
 | 새로 고침 | F5, Cmd+R |
 | 속성 | Cmd+I, ⌥Enter |
