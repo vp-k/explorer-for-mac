@@ -121,8 +121,7 @@ final class FileOperationsUndoArchiveTests: TemporaryDirectoryTestCase {
         let output = try resultURL(extracted)
         XCTAssertEqual(output.lastPathComponent, "한글 report")
         XCTAssertEqual(extracted.record, .created(output))
-        // --keepParent includes the containing directory when the input is a single file.
-        XCTAssertEqual(try text(output.appendingPathComponent("source/" + source.lastPathComponent)), try text(source))
+        XCTAssertEqual(try text(output.appendingPathComponent(source.lastPathComponent)), try text(source))
     }
 
     func testCompressDirectoryKeepsParentAndNestedContents() throws {
@@ -141,10 +140,10 @@ final class FileOperationsUndoArchiveTests: TemporaryDirectoryTestCase {
         try file("source/tree/sub/b.txt", "b")
         let archives = try folder("archives")
         let zip = try resultURL(FileOperations.compress([a, directory], in: archives))
-        XCTAssertEqual(zip.lastPathComponent, "압축.zip")
+        XCTAssertEqual(zip.lastPathComponent, "a.zip")
         let extracted = try resultURL(FileOperations.extract(zip, to: archives))
-        XCTAssertEqual(try text(extracted.appendingPathComponent("압축/a.txt")), "a")
-        XCTAssertEqual(try text(extracted.appendingPathComponent("압축/tree/sub/b.txt")), "b")
+        XCTAssertEqual(try text(extracted.appendingPathComponent("a.txt")), "a")
+        XCTAssertEqual(try text(extracted.appendingPathComponent("tree/sub/b.txt")), "b")
     }
 
     func testArchiveAndExtractionUseUniqueNamesWithoutOverwriting() throws {
@@ -180,7 +179,7 @@ final class FileOperationsUndoArchiveTests: TemporaryDirectoryTestCase {
         let redoExtraction = try undo(extracted)
         XCTAssertFalse(exists(output))
         remember(try FileOperations.undo(redoExtraction))
-        XCTAssertEqual(try text(output.appendingPathComponent("source/a.txt")), "a")
+        XCTAssertEqual(try text(output.appendingPathComponent("a.txt")), "a")
     }
 
     func testInvalidArchiveDoesNotLeaveOutputDirectory() throws {

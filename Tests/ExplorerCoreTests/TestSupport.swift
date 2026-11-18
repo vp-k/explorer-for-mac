@@ -43,6 +43,7 @@ class TemporaryDirectoryTestCase: XCTestCase {
     func remember(_ record: FileOperationRecord?) -> FileOperationRecord? {
         switch record {
         case .trashed(let pairs), .moved(let pairs): cleanupURLs += pairs.map(\.to)
+        case .compound(let records): for record in records { remember(record) }
         default: break
         }
         return record

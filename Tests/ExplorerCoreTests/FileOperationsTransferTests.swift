@@ -37,13 +37,13 @@ final class FileOperationsTransferTests: TemporaryDirectoryTestCase {
         XCTAssertEqual(target.lastPathComponent, "release.v1 - 복사본")
     }
 
-    func testCopyReplaceReplacesWholeDirectory() throws {
+    func testCopyReplaceMergesDirectoryAndPreservesDestinationOnlyFiles() throws {
         let source = try folder("source/data")
         try file("source/data/new.txt", "new")
         let destination = try folder("destination")
         try file("destination/data/old.txt", "old")
         let target = try resultURL(FileOperations.copy([source], to: destination, conflict: .replace))
-        XCTAssertEqual(try names(in: target), ["new.txt"])
+        XCTAssertEqual(try names(in: target), ["new.txt", "old.txt"])
         XCTAssertEqual(try names(in: destination), ["data"])
         XCTAssertTrue(exists(source))
     }
@@ -83,6 +83,7 @@ final class FileOperationsTransferTests: TemporaryDirectoryTestCase {
             default: return .keepBoth
             }
         }
+        remember(result.record)
         XCTAssertEqual(asked.map(\.lastPathComponent), ["a.txt", "b.txt", "c.txt"])
         XCTAssertEqual(Set(result.resultURLs.map(\.lastPathComponent)), ["a.txt", "c (2).txt", "d.txt"])
         XCTAssertEqual(result.skipped, [b])
@@ -123,6 +124,7 @@ final class FileOperationsTransferTests: TemporaryDirectoryTestCase {
             let source = try file("\(label)/source/a.txt", "new")
             let target = try file("\(label)/destination/a.txt", "old")
             let result = try FileOperations.move([source], to: target.deletingLastPathComponent(), conflict: policy)
+            remember(result.record)
             switch policy {
             case .replace:
                 XCTAssertFalse(exists(source))

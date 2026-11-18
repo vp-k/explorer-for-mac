@@ -1,4 +1,5 @@
 import Foundation
+import CoreServices
 
 /// 잘라내기/복사 상태. 시스템 대지(NSPasteboard) 연동은 UI 쪽 책임이고,
 /// 여기서는 "마지막으로 잘라낸 URL 목록" 을 기억해 붙여넣기 시 이동인지 판단한다.
@@ -118,6 +119,7 @@ public struct FolderStats: Sendable, Equatable {
 
 public enum FolderSizeCalculator {
     /// 재귀 합계 (속성 창). isCancelled 가 true 면 중단하고 그때까지 합계를 돌려준다.
+    /// 선택한 루트의 링크는 따라가며, 폴더 안에서 만난 링크는 따라가지 않는다.
     public static func stats(for urls: [URL], isCancelled: () -> Bool = { false }) -> FolderStats {
         var result = FolderStats()
         var visited = Set<String>()
@@ -135,8 +137,9 @@ public enum FolderSizeCalculator {
             result.totalBytes = result.totalBytes > Int64.max - bytes ? Int64.max : result.totalBytes + bytes
             return false
         }
-        for url in urls {
+        for selected in urls {
             guard !isCancelled() else { break }
+            let url = selected.resolvingSymlinksInPath()
             guard include(url, isRoot: true),
                   let enumerator = FileManager.default.enumerator(
                     at: url, includingPropertiesForKeys: nil, errorHandler: { _, _ in true }
@@ -252,37 +255,80 @@ public final class PinnedFolderStore: @unchecked Sendable {
     }
 }
 
-/// 폴더 변경 감시 (FSEvents 또는 DispatchSource). 변경 시 main 큐에서 onChange 호출 (0.3초 디바운스).
+/// FSEvents 파일 단위 감시. 하위 파일 내용/메타데이터 변경도 main 큐에서 알린다 (0.3초 디바운스).
+/// 감시 경로 또는 상위 폴더의 삭제/이름 변경도 onChange 를 호출한다.
+/// 경로를 자동으로 따라가지 않으므로 호출자는 경로 유효성을 확인하고 stop 후 새 감시자를 만들어야 한다.
 public final class DirectoryWatcher: @unchecked Sendable {
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "ExplorerCore.DirectoryWatcher")
-    private var source: DispatchSourceFileSystemObject?
+    private var stream: FSEventStreamRef?
     private var pending: DispatchWorkItem?
     private var generation: UInt64 = 0
     private var stopped = false
 
+    private final class CallbackContext {
+        weak var watcher: DirectoryWatcher?
+        let onChange: @Sendable () -> Void
+        init(watcher: DirectoryWatcher, onChange: @escaping @Sendable () -> Void) {
+            self.watcher = watcher
+            self.onChange = onChange
+        }
+    }
+
     public init(url: URL, onChange: @escaping @Sendable () -> Void) {
-        let descriptor = open(url.path, O_EVTONLY)
-        guard descriptor >= 0 else { stopped = true; return }
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: descriptor, eventMask: [.write, .delete, .rename, .attrib, .extend, .link, .revoke], queue: queue
+        guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+            stopped = true
+            return
+        }
+        let holder = CallbackContext(watcher: self, onChange: onChange)
+        var context = FSEventStreamContext(
+            version: 0, info: Unmanaged.passUnretained(holder).toOpaque(),
+            retain: { pointer in
+                guard let pointer else { return nil }
+                return UnsafeRawPointer(Unmanaged<CallbackContext>.fromOpaque(pointer).retain().toOpaque())
+            },
+            release: { pointer in
+                if let pointer { Unmanaged<CallbackContext>.fromOpaque(pointer).release() }
+            }, copyDescription: nil
         )
-        self.source = source
-        source.setEventHandler { [weak self] in self?.schedule(onChange) }
-        source.setCancelHandler { close(descriptor) }
-        source.resume()
+        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot |
+                                            kFSEventStreamCreateFlagNoDefer)
+        let createdStream = withExtendedLifetime(holder) {
+            FSEventStreamCreate(nil, { _, info, _, _, _, _ in
+                guard let info else { return }
+                let holder = Unmanaged<CallbackContext>.fromOpaque(info).takeUnretainedValue()
+                holder.watcher?.schedule(holder.onChange)
+            }, &context, [url.standardizedFileURL.resolvingSymlinksInPath().path] as CFArray,
+               FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.05, flags)
+        }
+        guard let stream = createdStream else {
+            stopped = true
+            return
+        }
+        FSEventStreamSetDispatchQueue(stream, queue)
+        guard FSEventStreamStart(stream) else {
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            stopped = true
+            return
+        }
+        self.stream = stream
     }
     public func stop() {
-        let oldSource = lock.withLock {
+        let oldStream = lock.withLock {
             stopped = true
             generation &+= 1
             pending?.cancel()
             pending = nil
-            let old = source
-            source = nil
+            let old = stream
+            stream = nil
             return old
         }
-        oldSource?.cancel()
+        if let oldStream {
+            FSEventStreamStop(oldStream)
+            FSEventStreamInvalidate(oldStream)
+            FSEventStreamRelease(oldStream)
+        }
     }
     deinit { stop() }
 

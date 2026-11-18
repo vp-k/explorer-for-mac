@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum ConflictPolicy: Sendable {
     /// 덮어쓰기
@@ -13,14 +14,20 @@ public enum FileOperationError: LocalizedError, Equatable {
     case invalidName(String)
     case alreadyExists(String)
     case destinationInsideSource(String)
+    case destinationContainsSource(String)
     case notFound(String)
+    /// 영구 삭제가 일부 완료된 뒤 실패했다. deleted 는 삭제가 완료된 최상위 항목들이다.
+    case partialDeletion(deleted: [URL], failed: URL, reason: String)
     case failed(String)
     public var errorDescription: String? {
         switch self {
         case .invalidName(let s): return "잘못된 이름입니다: \(s)"
         case .alreadyExists(let s): return "같은 이름의 항목이 이미 있습니다: \(s)"
         case .destinationInsideSource(let s): return "대상 폴더가 원본 폴더 안에 있습니다: \(s)"
+        case .destinationContainsSource(let s): return "대상 항목이 원본을 포함하고 있습니다: \(s)"
         case .notFound(let s): return "항목을 찾을 수 없습니다: \(s)"
+        case .partialDeletion(let deleted, let failed, let reason):
+            return "영구 삭제 실패: \(failed.path)\n\(reason)\n삭제 완료:\n\(deleted.map(\.path).joined(separator: "\n"))"
         case .failed(let s): return s
         }
     }
@@ -33,6 +40,8 @@ public enum FileOperationRecord: Sendable, Equatable {
     case renamed(from: URL, to: URL)
     case trashed(pairs: [MovePair])   // from: 원래 위치, to: 휴지통 위치
     case created(URL)
+    /// 순서대로 완료한 작업들. 실행 취소는 역순으로 수행하며 덮어쓴 항목도 복구한다.
+    indirect case compound(records: [FileOperationRecord])
 }
 
 public struct MovePair: Sendable, Equatable {
@@ -57,7 +66,8 @@ public enum FileOperations {
         try copy(sources, to: destination, conflict: { _ in conflict })
     }
 
-    /// 충돌한 대상 URL마다 정책을 선택한다. 같은 폴더 복사는 충돌 질문 없이 복사본을 만든다.
+    /// 폴더끼리는 재귀 병합하고 파일/패키지 충돌마다 정책을 선택한다.
+    /// 같은 폴더 복사와 배치 내 같은 이름의 둘째 원본부터는 질문 없이 복사본을 만든다.
     public static func copy(_ sources: [URL], to destination: URL, conflict: (URL) -> ConflictPolicy) throws -> OperationResult {
         try transfer(sources, to: destination, moving: false, conflict: conflict)
     }
@@ -66,7 +76,8 @@ public enum FileOperations {
         try move(sources, to: destination, conflict: { _ in conflict })
     }
 
-    /// 충돌한 대상 URL마다 정책을 선택한다.
+    /// 폴더끼리는 재귀 병합하고 파일/패키지 충돌마다 정책을 선택한다.
+    /// 배치 안에서 이미 사용한 이름은 질문 없이 둘 다 유지한다.
     public static func move(_ sources: [URL], to destination: URL, conflict: (URL) -> ConflictPolicy) throws -> OperationResult {
         try transfer(sources, to: destination, moving: true, conflict: conflict)
     }
@@ -94,10 +105,18 @@ public enum FileOperations {
         }
         return OperationResult(record: pairs.isEmpty ? nil : .trashed(pairs: pairs), resultURLs: pairs.map(\.to), skipped: [])
     }
-    /// 영구 삭제 (Shift+Delete).
+    /// 영구 삭제 (Shift+Delete). 일부 완료 후 실패하면 partialDeletion 에 삭제 목록을 담는다.
     public static func deletePermanently(_ urls: [URL]) throws {
         for url in urls { try requireItem(url) }
-        for url in urls { try manager.removeItem(at: url) }
+        var deleted: [URL] = []
+        for url in urls {
+            do { try manager.removeItem(at: url) }
+            catch {
+                guard !deleted.isEmpty else { throw error }
+                throw FileOperationError.partialDeletion(deleted: deleted, failed: url, reason: error.localizedDescription)
+            }
+            deleted.append(url)
+        }
     }
     /// 이름 바꾸기. 빈 이름, "/", ":" 포함, "." ".." 은 invalidName. 대소문자만 바꾸는 것은 허용.
     public static func rename(_ url: URL, to newName: String) throws -> OperationResult {
@@ -140,29 +159,31 @@ public enum FileOperations {
     }
     /// directory 안에서 겹치지 않는 이름. "a.txt" → "a (2).txt", 폴더 "x" → "x (2)".
     public static func uniqueName(_ name: String, in directory: URL) -> String {
-        availableName(name, in: directory, isDirectory: isDirectoryItem(directory.appendingPathComponent(name)))
+        availableName(name, in: directory, isDirectory: hasWholeDirectoryName(directory.appendingPathComponent(name)))
     }
-    /// 압축 (ditto -c -k --sequesterRsrc --keepParent). 하나면 "이름.zip", 여러 개면 "압축.zip".
+    /// 선택 항목을 ZIP 최상위에 압축한다. 첫 항목의 이름으로 ZIP 이름을 정하며 macOS 메타데이터는 제외한다.
+    /// ditto 는 UTF-8 이름 플래그를 설정하지 않아 Windows 에서 비 ASCII 이름 호환성은 보장하지 않는다.
     public static func compress(_ urls: [URL], in directory: URL) throws -> OperationResult {
         guard let first = urls.first else { throw FileOperationError.failed("압축할 항목이 없습니다.") }
         try requireDirectory(directory)
         for url in urls { try requireItem(url) }
-        let stem = urls.count == 1 ? nameParts(first.lastPathComponent, isDirectory: isDirectoryItem(first)).stem : "압축"
+        let stem = nameParts(first.lastPathComponent, isDirectory: isDirectoryItem(first)).stem
         let archive = directory.appendingPathComponent(availableName(stem + ".zip", in: directory, isDirectory: false))
-        let temporary = try temporaryDirectory()
+        let temporary = try temporaryDirectory(in: directory, excluding: urls)
         defer { try? manager.removeItem(at: temporary) }
         let output = temporary.appendingPathComponent("archive.zip")
-        var arguments = ["-c", "-k", "--sequesterRsrc", "--keepParent"]
+        var arguments = ["-c", "-k", "--norsrc", "--noextattr", "--noacl"]
         if urls.count == 1 {
+            if isDirectoryItem(first) { arguments.append("--keepParent") }
             arguments += [first.path, output.path]
         } else {
-            // ditto accepts only one archive source. Stage the selection under a stable parent name.
-            let contents = temporary.appendingPathComponent("압축", isDirectory: true)
+            // ditto accepts one source. Clone the selection on the destination volume when supported.
+            let contents = temporary.appendingPathComponent("contents", isDirectory: true)
             try manager.createDirectory(at: contents, withIntermediateDirectories: false)
             for url in urls {
                 let target = contents.appendingPathComponent(url.lastPathComponent)
                 guard !exists(target) else { throw FileOperationError.alreadyExists(target.path) }
-                try manager.copyItem(at: url, to: target)
+                try stageArchiveItem(url, at: target)
             }
             arguments += [contents.path, output.path]
         }
@@ -178,7 +199,7 @@ public enum FileOperations {
         try validateName(stem)
         let name = availableName(stem, in: directory, isDirectory: true)
         let target = directory.appendingPathComponent(name, isDirectory: true)
-        let temporary = try temporaryDirectory()
+        let temporary = try temporaryDirectory(in: directory)
         defer { try? manager.removeItem(at: temporary) }
         let output = temporary.appendingPathComponent("contents", isDirectory: true)
         try manager.createDirectory(at: output, withIntermediateDirectories: false)
@@ -190,6 +211,8 @@ public enum FileOperations {
     @discardableResult
     public static func undo(_ record: FileOperationRecord) throws -> FileOperationRecord? {
         switch record {
+        case .compound(let records):
+            return try undoCompound(records)
         case .copied(let urls):
             return try trash(urls).record
         case .created(let url):
@@ -233,10 +256,26 @@ public enum FileOperations {
         }
     }
 
-    private static func temporaryDirectory() throws -> URL {
-        let url = manager.temporaryDirectory.appendingPathComponent("ExplorerCore-\(UUID().uuidString)", isDirectory: true)
+    private static func temporaryDirectory(in directory: URL, excluding sources: [URL] = []) throws -> URL {
+        var parent = directory.standardizedFileURL.resolvingSymlinksInPath()
+        // If the ZIP is being created inside its source, stage outside that tree to avoid archiving ourselves.
+        while sources.contains(where: { isDirectoryItem($0) && contains(parent, in: $0) }) {
+            guard parent.standardizedFileURL.path != "/" else {
+                throw FileOperationError.destinationInsideSource(directory.path)
+            }
+            parent.deleteLastPathComponent()
+        }
+        let url = parent.appendingPathComponent(".explorer-archive-\(UUID().uuidString)", isDirectory: true)
         try manager.createDirectory(at: url, withIntermediateDirectories: false)
         return url
+    }
+
+    private static func stageArchiveItem(_ source: URL, at target: URL) throws {
+        // COPYFILE_CLONE falls back to copying on filesystems without clone support; links remain links.
+        let flags = copyfile_flags_t(COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_NOFOLLOW_SRC | COPYFILE_CLONE)
+        guard copyfile(source.path, target.path, nil, flags) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSFilePathErrorKey: source.path])
+        }
     }
 
     private static func runDitto(_ arguments: [String]) throws {
@@ -310,6 +349,17 @@ public enum FileOperations {
         (try? manager.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType) == .typeDirectory
     }
 
+    // Packages are opaque items: retain their extension and apply file conflict policies.
+    private static func hasWholeDirectoryName(_ url: URL) -> Bool {
+        isDirectoryItem(url) && (try? url.resourceValues(forKeys: [.isPackageKey]).isPackage) != true
+    }
+
+    private static func contains(_ child: URL, in parent: URL) -> Bool {
+        let root = parent.standardizedFileURL.resolvingSymlinksInPath().path
+        let path = child.standardizedFileURL.resolvingSymlinksInPath().path
+        return path == root || path.hasPrefix(root == "/" ? "/" : root + "/")
+    }
+
     private static func rejectDescendant(_ destination: URL, of source: URL) throws {
         guard isDirectoryItem(source) else { return }
         let parent = source.standardizedFileURL.resolvingSymlinksInPath()
@@ -321,72 +371,169 @@ public enum FileOperations {
         }
     }
 
-    /// Every completed step has an inverse, so a failed batch does not strand unrecorded changes.
+    private struct TransferState {
+        var records: [FileOperationRecord] = []
+        var skipped: [URL] = []
+        var rollback: [() throws -> Void] = []
+    }
+
+    /// Every completed step has an inverse, including displaced items and merged source directories.
     private static func transfer(_ sources: [URL], to destination: URL, moving: Bool,
                                  conflict: (URL) -> ConflictPolicy) throws -> OperationResult {
         try requireDirectory(destination)
         for source in sources {
             try requireItem(source)
             try rejectDescendant(destination, of: source)
+            // Same-parent copies choose a fresh name; same-parent moves leave the item in place.
+            if sameLocation(source.deletingLastPathComponent(), destination) { continue }
+            let target = destination.appendingPathComponent(source.lastPathComponent)
+            if isDirectoryItem(target), sources.contains(where: { !sameLocation($0, target) && contains($0, in: target) }) {
+                throw FileOperationError.destinationContainsSource(target.path)
+            }
         }
-        var pairs: [MovePair] = []
-        var skipped: [URL] = []
-        var backups: [MovePair] = []
-        var rollback: [() throws -> Void] = []
+        var state = TransferState()
+        var urls: [URL] = []
+        var names = Set<String>()
+        let caseSensitive = (try? destination.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+            .volumeSupportsCaseSensitiveNames) == true
         do {
             for source in sources {
+                let normalized = source.lastPathComponent.precomposedStringWithCanonicalMapping
+                let duplicate = !names.insert(caseSensitive ? normalized : normalized.lowercased()).inserted
                 let sameParent = sameLocation(source.deletingLastPathComponent(), destination)
-                if moving && sameParent { skipped.append(source); continue }
-                let directory = isDirectoryItem(source)
-                var target = destination.appendingPathComponent(source.lastPathComponent, isDirectory: directory)
+                if moving && sameParent { state.skipped.append(source); continue }
+                let wholeName = hasWholeDirectoryName(source)
+                var target = destination.appendingPathComponent(source.lastPathComponent)
                 if !moving && sameParent {
-                    let parts = nameParts(source.lastPathComponent, isDirectory: directory)
-                    let name = availableName("\(parts.stem) - 복사본\(parts.suffix)", in: destination, isDirectory: directory)
-                    target = destination.appendingPathComponent(name, isDirectory: directory)
-                } else if exists(target) {
-                    switch conflict(target) {
-                    case .skip: skipped.append(source); continue
-                    case .keepBoth:
-                        target = destination.appendingPathComponent(
-                            availableName(source.lastPathComponent, in: destination, isDirectory: directory), isDirectory: directory)
-                    case .replace:
-                        // A symlink alias or hard link must never cause the source to be removed.
-                        guard !sameLocation(source, target) else { throw FileOperationError.alreadyExists(target.path) }
-                        let backup = destination.appendingPathComponent(".explorer-backup-\(UUID().uuidString)")
-                        try manager.moveItem(at: target, to: backup)
-                        backups.append(MovePair(from: target, to: backup))
-                        let original = target
-                        rollback.append { try manager.moveItem(at: backup, to: original) }
-                    }
+                    let parts = nameParts(source.lastPathComponent, isDirectory: wholeName)
+                    let name = availableName("\(parts.stem) - 복사본\(parts.suffix)", in: destination, isDirectory: wholeName)
+                    target = destination.appendingPathComponent(name)
                 }
-                if moving { try manager.moveItem(at: source, to: target) }
-                else {
-                    let staging = destination.appendingPathComponent(".explorer-copy-\(UUID().uuidString)")
-                    defer { try? manager.removeItem(at: staging) }
-                    try manager.copyItem(at: source, to: staging)
-                    try manager.moveItem(at: staging, to: target)
+                let alreadyWritten = urls.contains { sameLocation($0, target) }
+                if let completed = try transferItem(source, to: target, moving: moving, keepBoth: duplicate || alreadyWritten,
+                                                    conflict: conflict, state: &state) {
+                    urls.append(completed)
                 }
-                let completedTarget = target
-                rollback.append {
-                    if moving { try manager.moveItem(at: completedTarget, to: source) }
-                    else { try manager.removeItem(at: completedTarget) }
-                }
-                pairs.append(MovePair(from: source, to: target))
             }
         } catch {
-            var rollbackErrors: [String] = []
-            for action in rollback.reversed() {
-                do { try action() }
-                catch { rollbackErrors.append(error.localizedDescription) }
-            }
-            if !rollbackErrors.isEmpty {
-                throw FileOperationError.failed("\(error.localizedDescription)\n복구 실패: \(rollbackErrors.joined(separator: "\n"))")
-            }
-            throw error
+            try rollBack(state.rollback, after: error)
         }
-        for backup in backups { try? manager.removeItem(at: backup.to) }
-        let urls = pairs.map(\.to)
-        let record: FileOperationRecord? = pairs.isEmpty ? nil : (moving ? .moved(pairs: pairs) : .copied(created: urls))
-        return OperationResult(record: record, resultURLs: urls, skipped: skipped)
+        return OperationResult(record: combinedRecord(state.records), resultURLs: urls, skipped: state.skipped)
+    }
+
+    private static func transferItem(_ source: URL, to proposed: URL, moving: Bool, keepBoth: Bool = false,
+                                     conflict: (URL) -> ConflictPolicy, state: inout TransferState) throws -> URL? {
+        var target = proposed
+        if exists(target) {
+            if !keepBoth && hasWholeDirectoryName(source) && hasWholeDirectoryName(target) {
+                guard !sameLocation(source, target) else { throw FileOperationError.alreadyExists(target.path) }
+                try mergeDirectory(source, into: target, moving: moving, conflict: conflict, state: &state)
+                return target
+            }
+            switch keepBoth ? .keepBoth : conflict(target) {
+            case .skip: state.skipped.append(source); return nil
+            case .keepBoth:
+                target = target.deletingLastPathComponent().appendingPathComponent(
+                    availableName(target.lastPathComponent, in: target.deletingLastPathComponent(),
+                                  isDirectory: hasWholeDirectoryName(source)))
+            case .replace:
+                guard !sameLocation(source, target) else { throw FileOperationError.alreadyExists(target.path) }
+                try displaceToTrash(target, state: &state)
+            }
+        }
+        try transferUnoccupiedItem(source, to: target, moving: moving, state: &state)
+        return target
+    }
+
+    private static func mergeDirectory(_ source: URL, into target: URL, moving: Bool,
+                                       conflict: (URL) -> ConflictPolicy, state: inout TransferState) throws {
+        let children = try manager.contentsOfDirectory(atPath: source.path).sorted()
+        for name in children {
+            let child = source.appendingPathComponent(name)
+            _ = try transferItem(child, to: target.appendingPathComponent(child.lastPathComponent), moving: moving,
+                                 conflict: conflict, state: &state)
+        }
+        if moving, try manager.contentsOfDirectory(atPath: source.path).isEmpty {
+            // Keep the empty container in Trash so undo restores its metadata before restoring children.
+            try displaceToTrash(source, state: &state)
+        }
+    }
+
+    private static func displaceToTrash(_ url: URL, state: inout TransferState) throws {
+        let result = try trash([url])
+        guard case .trashed(let pairs) = result.record else {
+            throw FileOperationError.failed("휴지통 기록을 확인할 수 없습니다: \(url.path)")
+        }
+        state.records.append(.trashed(pairs: pairs))
+        for pair in pairs {
+            state.rollback.append { try manager.moveItem(at: pair.to, to: pair.from) }
+        }
+    }
+
+    private static func transferUnoccupiedItem(_ source: URL, to target: URL, moving: Bool,
+                                              state: inout TransferState) throws {
+        if moving {
+            try manager.moveItem(at: source, to: target)
+            state.records.append(.moved(pairs: [MovePair(from: source, to: target)]))
+            state.rollback.append { try manager.moveItem(at: target, to: source) }
+        } else {
+            let staging = target.deletingLastPathComponent().appendingPathComponent(".explorer-copy-\(UUID().uuidString)")
+            defer { try? manager.removeItem(at: staging) }
+            try manager.copyItem(at: source, to: staging)
+            try manager.moveItem(at: staging, to: target)
+            state.records.append(.copied(created: [target]))
+            state.rollback.append { try manager.removeItem(at: target) }
+        }
+    }
+
+    private static func combinedRecord(_ records: [FileOperationRecord]) -> FileOperationRecord? {
+        guard !records.isEmpty else { return nil }
+        if records.count == 1 { return records[0] }
+        if records.allSatisfy({ if case .copied = $0 { return true }; return false }) {
+            return .copied(created: records.flatMap { if case .copied(let urls) = $0 { return urls }; return [] })
+        }
+        if records.allSatisfy({ if case .moved = $0 { return true }; return false }) {
+            return .moved(pairs: records.flatMap { if case .moved(let pairs) = $0 { return pairs }; return [] })
+        }
+        return .compound(records: records)
+    }
+
+    private static func undoCompound(_ records: [FileOperationRecord]) throws -> FileOperationRecord? {
+        // Check before moving anything into Trash: a missing backup's old name could otherwise be reused.
+        for record in records { try requireUndoItems(record) }
+        var inverses: [FileOperationRecord] = []
+        do {
+            for record in records.reversed() {
+                if let inverse = try undo(record) { inverses.append(inverse) }
+            }
+        } catch {
+            try rollBack(inverses.map { record in { _ = try undo(record) } }, after: error)
+        }
+        // These steps may share paths (restoring an old item after removing its replacement).
+        // Preserve their order rather than collapsing them into a batch of independent moves.
+        guard !inverses.isEmpty else { return nil }
+        return inverses.count == 1 ? inverses[0] : .compound(records: inverses)
+    }
+
+    private static func requireUndoItems(_ record: FileOperationRecord) throws {
+        switch record {
+        case .copied(let urls): for url in urls { try requireItem(url) }
+        case .created(let url): try requireItem(url)
+        case .moved(let pairs), .trashed(let pairs): for pair in pairs { try requireItem(pair.to) }
+        case .renamed(_, let to): try requireItem(to)
+        case .compound(let records): for child in records { try requireUndoItems(child) }
+        }
+    }
+
+    private static func rollBack(_ actions: [() throws -> Void], after original: Error) throws -> Never {
+        var failures: [String] = []
+        for action in actions.reversed() {
+            do { try action() }
+            catch { failures.append(error.localizedDescription) }
+        }
+        guard failures.isEmpty else {
+            throw FileOperationError.failed("\(original.localizedDescription)\n복구 실패: \(failures.joined(separator: "\n"))")
+        }
+        throw original
     }
 }

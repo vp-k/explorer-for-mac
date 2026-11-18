@@ -141,4 +141,42 @@ final class FilesystemSupportTests: TemporaryDirectoryTestCase {
         XCTAssertEqual(stats.totalBytes, 3 + linkSize)
         XCTAssertEqual(FolderSizeCalculator.stats(for: [target]).totalBytes, 3)
     }
+
+    func testFolderSizeFollowsSelectedRootLinksAndDeduplicatesTargets() throws {
+        let directory = try folder("target")
+        let targetFile = try file("target/sub/data", String(repeating: "a", count: 1000))
+        let directoryLink = root.appendingPathComponent("directory-link")
+        let fileLink = root.appendingPathComponent("file-link")
+        try manager.createSymbolicLink(at: directoryLink, withDestinationURL: directory)
+        try manager.createSymbolicLink(at: fileLink, withDestinationURL: targetFile)
+        let viaLink = FolderSizeCalculator.stats(for: [directoryLink])
+        XCTAssertEqual(viaLink.totalBytes, 1000)
+        XCTAssertEqual(viaLink.fileCount, 1)
+        XCTAssertEqual(viaLink.folderCount, 1)
+        XCTAssertEqual(FolderSizeCalculator.stats(for: [directoryLink, directory, fileLink]), viaLink)
+        XCTAssertEqual(FolderSizeCalculator.stats(for: [fileLink]).totalBytes, 1000)
+    }
+
+    func testSearchMatchesNFDNamesWithNFCSubstringAndWildcardQueries() throws {
+        let name = "한글문서.txt".decomposedStringWithCanonicalMapping
+        let source = try file("source/" + name, "data")
+        for query in ["한글", "한글*.txt"] {
+            var results: [FileItem] = []
+            FileSearch(root: source.deletingLastPathComponent(), query: query, showHidden: false).run { results += $0 }
+            XCTAssertEqual(results.map(\.url), [source])
+        }
+        XCTAssertTrue(WildcardMatcher.matches(name, pattern: "한"))
+    }
+
+    func testNFCRenameOfNFDNameIsNoOpAndPinnedFolderIsNotDuplicated() throws {
+        let source = try file("가.txt".decomposedStringWithCanonicalMapping, "keep")
+        let result = try FileOperations.rename(source, to: "가.txt".precomposedStringWithCanonicalMapping)
+        XCTAssertNil(result.record)
+        XCTAssertEqual(try text(source), "keep")
+        let directory = try folder("폴더".decomposedStringWithCanonicalMapping)
+        let store = PinnedFolderStore(storageURL: root.appendingPathComponent("pins.json"))
+        store.pin(directory)
+        store.pin(root.appendingPathComponent("폴더".precomposedStringWithCanonicalMapping))
+        XCTAssertEqual(store.folders.filter { $0.lastPathComponent == "폴더" }.count, 1)
+    }
 }
