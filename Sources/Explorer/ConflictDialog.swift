@@ -39,11 +39,16 @@ final class ConflictResolver: @unchecked Sendable {
     private let destination: URL
     private let move: Bool
     private weak var window: NSWindow?
+    /// 진행률 창의 작업. 취소하면 떠 있는 질문을 닫는다.
+    private let job: ProgressJob?
+    private let ticket: ProgressTicket?
 
-    init(destination: URL, move: Bool, window: NSWindow?) {
+    init(destination: URL, move: Bool, window: NSWindow?, job: ProgressJob?) {
         self.destination = destination
         self.move = move
         self.window = window
+        self.job = job
+        ticket = job?.ticket
     }
 
     func record(_ policy: ConflictPolicy, for target: URL) {
@@ -61,13 +66,15 @@ final class ConflictResolver: @unchecked Sendable {
         let known: ConflictPolicy? = lock.withLock { decisions[Location.key(target)] ?? applyToRest }
         if let known { return known }
         guard !Thread.isMainThread else { return .keepBoth }
+        // 이미 취소했으면 묻지 않는다. Core 가 곧 취소를 보고 되돌린다.
+        if ticket?.isCancelled == true { return .skip }
         let semaphore = DispatchSemaphore(value: 0)
         let box = AnswerBox()
         let destination = destination, move = move
-        let window = self.window
+        let window = self.window, job = self.job
         Task { @MainActor in
             box.answer = await ConflictDialog.ask(source: target, target: target, remaining: 1, inProgress: true,
-                                                  destination: destination, move: move, window: window)
+                                                  destination: destination, move: move, window: window, job: job)
             semaphore.signal()
         }
         semaphore.wait()
@@ -135,12 +142,12 @@ enum ConflictDialog {
         return (try? url.resourceValues(forKeys: [.isPackageKey]).isPackage) != true
     }
 
-    /// 원본마다 차례로 묻는다. 취소하면 nil.
+    /// 원본마다 차례로 묻는다. 취소하면 nil. 진행률 창에서 job 을 취소해도 nil.
     /// 같은 이름의 원본이 여러 개면 Core 가 첫 원본만 묻고 나머지는 둘 다 유지하므로, 남은 원본 중 첫 원본에만 묻는다.
     /// 건너뛰기로 답한 최상위 원본은 작업에서 빼고, 그다음 같은 이름 원본이 그 자리를 이어받는다.
     static func plan(_ candidates: [ConflictCandidate], destination: URL, move: Bool, caseSensitive: Bool,
-                     window: NSWindow?) async -> ConflictPlan? {
-        let resolver = ConflictResolver(destination: destination, move: move, window: window)
+                     window: NSWindow?, job: ProgressJob? = nil) async -> ConflictPlan? {
+        let resolver = ConflictResolver(destination: destination, move: move, window: window, job: job)
         var remaining = candidates.reduce(0) { count, candidate in
             switch candidate.kind {
             case .item: return count + 1
@@ -162,8 +169,8 @@ enum ConflictDialog {
                 defer { remaining -= 1 }
                 if claimed.contains(name) { sources.append(candidate.source); continue }
                 guard let policy = await decide(ConflictQuestion(source: candidate.source, target: candidate.target),
-                                                remaining: remaining, resolver: resolver,
-                                                destination: destination, move: move, window: window) else { return nil }
+                                                remaining: remaining, resolver: resolver, destination: destination,
+                                                move: move, window: window, job: job) else { return nil }
                 if policy == .skip { continue }
                 resolver.record(policy, for: candidate.target)
                 claimed.insert(name)
@@ -178,7 +185,7 @@ enum ConflictDialog {
                     defer { remaining -= 1 }
                     guard let policy = await decide(question, remaining: remaining, resolver: resolver,
                                                     destination: destination, move: move,
-                                                    window: window) else { return nil }
+                                                    window: window, job: job) else { return nil }
                     resolver.record(policy, for: question.target)
                 }
                 sources.append(candidate.source)
@@ -188,10 +195,12 @@ enum ConflictDialog {
     }
 
     private static func decide(_ question: ConflictQuestion, remaining: Int, resolver: ConflictResolver,
-                               destination: URL, move: Bool, window: NSWindow?) async -> ConflictPolicy? {
+                               destination: URL, move: Bool, window: NSWindow?, job: ProgressJob?) async -> ConflictPolicy? {
+        if job?.isCancelled == true { return nil }
         if let policy = resolver.restPolicy { return policy }
         guard let answer = await ask(source: question.source, target: question.target, remaining: remaining,
-                                     inProgress: false, destination: destination, move: move, window: window) else { return nil }
+                                     inProgress: false, destination: destination, move: move, window: window,
+                                     job: job) else { return nil }
         if answer.applyToAll { resolver.setApplyToRest(answer.policy) }
         return answer.policy
     }
@@ -210,8 +219,10 @@ enum ConflictDialog {
 
     /// 항목 하나에 대한 질문. remaining 은 이 항목을 포함한 남은 충돌 수.
     /// inProgress 면 작업이 이미 시작돼 취소할 수 없으므로 취소 대신 나머지를 건너뛴다.
+    /// 진행률 창에서 job 을 취소하면 떠 있는 질문을 닫고 '취소'로 답한다 (P-M1).
     static func ask(source: URL, target: URL, remaining: Int, inProgress: Bool, destination: URL, move: Bool,
-                    window: NSWindow?) async -> (policy: ConflictPolicy, applyToAll: Bool)? {
+                    window: NSWindow?, job: ProgressJob? = nil) async -> (policy: ConflictPolicy, applyToAll: Bool)? {
+        if job?.isCancelled == true { return nil }
         let alert = NSAlert()
         alert.alertStyle = .warning
         let relative = target.path.hasPrefix(destination.path + "/")
@@ -232,12 +243,28 @@ enum ConflictDialog {
             alert.suppressionButton?.state = .off
         }
 
+        job?.cancelHandler = { [weak alert] in
+            guard let panel = alert?.window else { return }
+            if let parent = panel.sheetParent {
+                parent.endSheet(panel, returnCode: .cancel)
+            } else if NSApp.modalWindow === panel {
+                NSApp.stopModal(withCode: .cancel)
+                // 타이머 등 이벤트 밖에서 불렸으면 모달 루프가 다음 이벤트까지 멈추지 않으므로 하나 넣는다.
+                if let wake = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [],
+                                                 timestamp: 0, windowNumber: 0, context: nil,
+                                                 subtype: 0, data1: 0, data2: 0) {
+                    NSApp.postEvent(wake, atStart: false)
+                }
+            }
+        }
+        defer { job?.cancelHandler = nil }
         let response: NSApplication.ModalResponse
         if let host = hostWindow(preferring: window) {
             response = await alert.beginSheetModal(for: host)
         } else {
             response = alert.runModal()
         }
+        if job?.isCancelled == true { return nil }
         let applyToAll = alert.suppressionButton?.state == .on && remaining > 1
         switch response {
         case .alertFirstButtonReturn: return (.replace, applyToAll)

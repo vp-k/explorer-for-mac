@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = MainMenu.build()
         GlobalKeyHandler.install()
         AppState.shared.operations.onIdle = { [weak self] in self?.operationsDidFinish() }
+        AppState.cleanupStaleArtifactsInBackground()
         if controllers.isEmpty { openWindow(at: Self.startFolder() ?? Location.home) }
         #if DEBUG
         // 확인용 실행은 사용자가 쓰는 앱에서 초점을 빼앗지 않는다.
@@ -91,6 +92,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 무엇을 기다리는지 보이도록 진행률 창을 바로 띄운다.
         FileProgressCenter.shared.showNow()
         return .terminateCancel
+    }
+
+    /// 큐가 빈 뒤에만 종료가 확정되므로 여기서 백업을 지워도 실행 중인 작업과 겹치지 않는다.
+    func applicationWillTerminate(_ notification: Notification) {
+        guard !AppState.shared.operations.isBusy else { return }
+        AppState.shared.discardAllBackups()
     }
 
     private func operationsDidFinish() {

@@ -129,9 +129,12 @@ extension BrowserViewController {
             let scanned = await Task.detached(priority: .userInitiated) {
                 (ConflictDialog.scan(urls, to: destination), ConflictDialog.isCaseSensitive(destination))
             }.value
-            guard let plan = await ConflictDialog.plan(scanned.0, destination: destination, move: move,
-                                                       caseSensitive: scanned.1, window: window),
+            // 질문 중에 진행률 창에서 취소하면 질문이 닫히고 nil 이 온다.
+            guard !job.isCancelled,
+                  let plan = await ConflictDialog.plan(scanned.0, destination: destination, move: move,
+                                                       caseSensitive: scanned.1, window: window, job: job),
                   !plan.sources.isEmpty else { return nil }
+            if job.isCancelled { return .failure(FileOperationError.cancelled) }
             let sources = plan.sources
             let resolver = plan.resolver
             job.itemCount = sources.count

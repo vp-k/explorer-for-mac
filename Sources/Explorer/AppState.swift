@@ -105,6 +105,23 @@ final class AppState {
         if let undo { undoStack.append(undo) }
     }
 
+    /// 정상 종료 직전에 부른다. 실행 취소 기록이 모두 사라지므로 그 기록이 쥔 숨김 백업도 지운다.
+    /// 세션 중에는 지우지 않는다. 다른 기록이 같은 백업을 다시 쓸 수 있기 때문이다.
+    func discardAllBackups() {
+        for record in undoStack + redoStack {
+            _ = try? FileOperations.discardBackups(for: record)
+        }
+        undoStack.removeAll()
+        redoStack.removeAll()
+    }
+
+    /// 비정상 종료로 남은 복사 스테이징과 완료된 백업 중 하루 넘은 것을 회수한다.
+    nonisolated static func cleanupStaleArtifactsInBackground() {
+        DispatchQueue.global(qos: .utility).async {
+            _ = try? FileOperations.cleanupStaleArtifacts(olderThan: Date().addingTimeInterval(-86_400))
+        }
+    }
+
     // MARK: 빠른 액세스
 
     func togglePin(_ url: URL) {

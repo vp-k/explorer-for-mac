@@ -1,10 +1,20 @@
 import Foundation
+import Darwin
 
 /// Patches only header flags, using the central directory rather than scanning compressed data.
 /// File data is never loaded into memory. ZIP64 directory counts/offsets are supported as well.
 enum ZIPFilenameEncoding {
     static func markUTF8(in url: URL) throws {
-        let file = try FileHandle(forUpdating: url)
+        try markUTF8(in: url) { file, offset, data in
+            try file.seek(toOffset: offset)
+            try file.write(contentsOf: data)
+        }
+    }
+
+    /// Injection point for a write failure after an earlier flag edit has succeeded.
+    static func markUTF8(in url: URL, writeFlag: (FileHandle, UInt64, Data) throws -> Void) throws {
+        let original = url.resolvingSymlinksInPath()
+        let file = try FileHandle(forUpdating: original)
         defer { try? file.close() }
         let size = try file.seekToEnd()
         let invalid = FileOperationError.failed("ZIP 파일 이름 헤더를 확인할 수 없습니다.")
@@ -18,12 +28,6 @@ enum ZIPFilenameEncoding {
                 result.append(data)
             }
             return result
-        }
-
-        func setFlag(at offset: UInt64, flags: UInt64) throws {
-            let value = flags | 0x800
-            try file.seek(toOffset: offset)
-            try file.write(contentsOf: Data([UInt8(value & 0xff), UInt8((value >> 8) & 0xff)]))
         }
 
         guard size >= 22 else { throw invalid }
@@ -57,6 +61,9 @@ enum ZIPFilenameEncoding {
               count <= directorySize / 46 else { throw invalid }
         let directoryEnd = directoryOffset + directorySize
         var position = directoryOffset
+        var patches: [(offset: UInt64, flags: UInt64)] = []
+        // Phase 1: validate the entire directory and every referenced local header. A malformed
+        // later entry must not leave an earlier entry's flags partially updated.
         for _ in 0..<count {
             guard position <= directoryEnd, directoryEnd - position >= 46 else { throw invalid }
             let header = try read(position, 46)
@@ -67,43 +74,67 @@ enum ZIPFilenameEncoding {
             let entrySize = UInt64(46 + nameSize + extraSize + commentSize)
             guard entrySize <= directoryEnd - position else { throw invalid }
             let name = try read(position + 46, nameSize)
-            if name.contains(where: { $0 >= 0x80 }) {
+            let needsUTF8 = name.contains(where: { $0 >= 0x80 })
+            if needsUTF8 {
                 guard String(data: name, encoding: .utf8) != nil else { throw invalid }
                 let comment = try read(position + 46 + UInt64(nameSize + extraSize), commentSize)
                 guard String(data: comment, encoding: .utf8) != nil else { throw invalid }
-                var localOffset = header.number(at: 42, length: 4)
-                if localOffset == 0xffff_ffff {
-                    let extra = try read(position + 46 + UInt64(nameSize), extraSize)
-                    var cursor = 0
-                    var found = false
-                    while cursor + 4 <= extra.count {
-                        let tag = extra.number(at: cursor, length: 2)
-                        let length = Int(extra.number(at: cursor + 2, length: 2))
-                        cursor += 4
-                        guard length <= extra.count - cursor else { throw invalid }
-                        if tag == 1 {
-                            let skip = (header.number(at: 24, length: 4) == 0xffff_ffff ? 8 : 0)
-                                + (header.number(at: 20, length: 4) == 0xffff_ffff ? 8 : 0)
-                            guard skip + 8 <= length else { throw invalid }
-                            localOffset = extra.number(at: cursor + skip, length: 8)
-                            found = true
-                            break
-                        }
-                        cursor += length
+            }
+            var localOffset = header.number(at: 42, length: 4)
+            if localOffset == 0xffff_ffff {
+                let extra = try read(position + 46 + UInt64(nameSize), extraSize)
+                var cursor = 0
+                var found = false
+                while cursor + 4 <= extra.count {
+                    let tag = extra.number(at: cursor, length: 2)
+                    let length = Int(extra.number(at: cursor + 2, length: 2))
+                    cursor += 4
+                    guard length <= extra.count - cursor else { throw invalid }
+                    if tag == 1 {
+                        let skip = (header.number(at: 24, length: 4) == 0xffff_ffff ? 8 : 0)
+                            + (header.number(at: 20, length: 4) == 0xffff_ffff ? 8 : 0)
+                        guard skip + 8 <= length else { throw invalid }
+                        localOffset = extra.number(at: cursor + skip, length: 8)
+                        found = true
+                        break
                     }
-                    guard found else { throw invalid }
+                    cursor += length
                 }
-                guard localOffset < directoryOffset, directoryOffset - localOffset >= 30 else { throw invalid }
-                let local = try read(localOffset, 30)
-                guard local.number(at: 0, length: 4) == 0x04034b50,
-                      local.number(at: 26, length: 2) == UInt64(nameSize),
-                      try read(localOffset + 30, nameSize) == name else { throw invalid }
-                try setFlag(at: localOffset + 6, flags: local.number(at: 6, length: 2))
-                try setFlag(at: position + 8, flags: header.number(at: 8, length: 2))
+                guard found else { throw invalid }
+            }
+            guard localOffset < directoryOffset, directoryOffset - localOffset >= 30 else { throw invalid }
+            let local = try read(localOffset, 30)
+            guard local.number(at: 0, length: 4) == 0x04034b50,
+                  local.number(at: 26, length: 2) == UInt64(nameSize),
+                  UInt64(nameSize) + local.number(at: 28, length: 2) <= directoryOffset - localOffset - 30,
+                  try read(localOffset + 30, nameSize) == name else { throw invalid }
+            if needsUTF8 {
+                patches.append((localOffset + 6, local.number(at: 6, length: 2)))
+                patches.append((position + 8, header.number(at: 8, length: 2)))
             }
             position += entrySize
         }
-        try file.synchronize()
+        guard position == directoryEnd else { throw invalid }
+        let edits = patches.filter { $0.flags & 0x800 == 0 }
+        guard !edits.isEmpty else { return }
+        // Phase 2: edit a same-volume copy (cloned by FileManager where supported). Only publish
+        // after all writes and synchronization succeed, so even a late I/O error keeps the input.
+        // The normal artifact journal also recovers this private copy after process termination.
+        let container = try FileOperationArtifacts.shared.makeCopyStaging(in: original.deletingLastPathComponent())
+        defer { try? FileOperationArtifacts.shared.removeCopyStaging(container) }
+        let output = container.appendingPathComponent("payload")
+        try FileManager.default.copyItem(at: original, to: output)
+        let patched = try FileHandle(forUpdating: output)
+        defer { try? patched.close() }
+        for patch in edits {
+            let value = patch.flags | 0x800
+            try writeFlag(patched, patch.offset, Data([UInt8(value & 0xff), UInt8((value >> 8) & 0xff)]))
+        }
+        try patched.synchronize()
+        try patched.close()
+        guard Darwin.rename(output.path, original.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 }
 

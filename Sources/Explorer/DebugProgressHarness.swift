@@ -97,6 +97,16 @@ enum DebugProgressHarness {
             NSApp.terminate(nil)
             return
         }
+        // EXPLORER_PROGRESS_HARNESS_SCENES 가 있으면 큰 파일 장면 대신 지정한 장면만 돈다.
+        if let scenes = ProcessInfo.processInfo.environment["EXPLORER_PROGRESS_HARNESS_SCENES"] {
+            let names = Set(scenes.split(separator: ",").map(String.init))
+            if names.contains("conflict") { await conflictCancelScenes(browser: browser, window: window, work: work) }
+            if names.contains("queue80") { await queueLoadScene() }
+            log("summary failures=\(failures)")
+            try? fm.removeItem(at: work)
+            NSApp.terminate(nil)
+            return
+        }
         let big: [URL], small: [URL], trashable: [URL]
         do {
             big = try makeFiles(in: work.appendingPathComponent("원본"), count: 6, megabytes: 512, prefix: "큰 파일")
@@ -188,10 +198,9 @@ enum DebugProgressHarness {
         browser.trash(trashable)
         await wait(10) { center.isPanelVisible }
         await pause(0.3)
-        let rows = center.panelWindow?.contentView?.subviews.compactMap { $0 as? NSStackView }.first?.arrangedSubviews.count ?? 0
+        let rows = center.debugPanel?.debugRows.count ?? 0
         check("큐 여러 개 표시", center.jobs.count == 3 && rows == 3, "작업 \(center.jobs.count)개, 줄 \(rows)개")
-        let stackRows = center.panelWindow?.contentView?.subviews.compactMap { $0 as? NSStackView }.first?
-            .arrangedSubviews ?? []
+        let stackRows = center.debugPanel?.debugRows ?? []
         let heights = stackRows.map { $0.frame.height }
         check("대기 줄은 실행 줄보다 낮음", heights.count == 3 && heights[1] < heights[0] - 20 && heights[2] < heights[0] - 20,
               "높이 \(heights.map { Int($0) })")
@@ -233,7 +242,128 @@ enum DebugProgressHarness {
         NSApp.terminate(nil)
     }
 
-    private final class Flag { var value = false }
+    private final class Flag: @unchecked Sendable { var value = false }
+
+    /// 충돌 질문이 떠 있는 동안 진행률 창에서 취소하면 질문이 닫히고 뒤 작업이 이어지는지 본다 (P-M1).
+    /// 시트로 묻는 경우와, 붙일 창이 없어 독립 모달로 묻는 경우를 모두 본다.
+    private static func conflictCancelScenes(browser: BrowserViewController, window: NSWindow, work: URL) async {
+        let fm = FileManager.default
+        for modal in [false, true] {
+            let label = modal ? "모달" : "시트"
+            let root = work.appendingPathComponent("충돌 \(label)", isDirectory: true)
+            let source = root.appendingPathComponent("원본", isDirectory: true)
+            let destination = root.appendingPathComponent("대상", isDirectory: true)
+            try? fm.createDirectory(at: source, withIntermediateDirectories: true)
+            try? fm.createDirectory(at: destination, withIntermediateDirectories: true)
+            let src = source.appendingPathComponent("같은 이름.txt")
+            let dst = destination.appendingPathComponent("같은 이름.txt")
+            try? Data("원본".utf8).write(to: src)
+            try? Data("대상".utf8).write(to: dst)
+
+            // 모달 경우는 탐색기 창에 다른 시트를 먼저 붙여 질문을 붙일 창이 없게 한다.
+            let blocker = NSAlert()
+            blocker.messageText = "하네스가 붙인 시트"
+            if modal { blocker.beginSheetModal(for: window) { _ in } }
+
+            // 질문이 뜨면 진행률 창을 띄우고 그 줄의 취소 단추를 누른다.
+            // 독립 모달이 도는 동안에는 이 Task 가 돌지 않으므로 공통 모드 타이머로 한다.
+            let questionShown = Flag(), fired = Flag()
+            let timer = Timer(timeInterval: 0.1, repeats: true) { timer in
+                MainActor.assumeIsolated {
+                    let showing = modal ? NSApp.modalWindow != nil : window.attachedSheet != nil
+                    guard showing, center.jobs.first?.phase == .preparing else { return }
+                    questionShown.value = true
+                    center.showNow()
+                    (center.debugPanel?.debugRows.first as? ProgressRowView)?.debugPressCancel()
+                    fired.value = true
+                    timer.invalidate()
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+
+            let done = Flag(), follow = Flag()
+            Task {
+                _ = await browser.performTransfer([src], to: destination, move: true)
+                done.value = true
+            }
+            let asked = await wait(5) { fired.value }
+            timer.invalidate()
+            Task {
+                _ = await browser.runOperation { try FileOperations.createFile(in: root, baseName: "뒤 작업.txt") }
+                follow.value = true
+            }
+            let finished = await wait(3) { done.value && follow.value }
+            if modal, let sheet = window.attachedSheet { window.endSheet(sheet) }
+            let questionGone = modal ? NSApp.modalWindow == nil : window.attachedSheet == nil
+            check("\(label) 질문 중 진행률 취소", asked && questionShown.value && questionGone && finished
+                  && browser.state.operations.pendingCount == 0 && center.jobs.isEmpty,
+                  "질문 \(questionShown.value) 닫힘 \(questionGone) 이동 끝 \(done.value) 뒤 작업 \(follow.value) "
+                  + "대기 \(browser.state.operations.pendingCount) 작업 \(center.jobs.count)")
+            let srcText = (try? String(contentsOf: src)) ?? "없음"
+            let dstText = (try? String(contentsOf: dst)) ?? "없음"
+            check("\(label) 취소 후 원본·대상 보존", srcText == "원본" && dstText == "대상"
+                  && fm.fileExists(atPath: root.appendingPathComponent("뒤 작업.txt").path),
+                  "원본 \(srcText) 대상 \(dstText)")
+            check("\(label) 취소는 오류 알림 없음", !alertShown)
+            // 질문이 남았으면 다음 장면을 위해 닫는다.
+            for _ in 0..<5 where !(done.value && follow.value) {
+                if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
+                if NSApp.modalWindow != nil { NSApp.stopModal(withCode: .cancel) }
+                await wait(1) { done.value && follow.value }
+            }
+        }
+    }
+
+    /// 작업 80개가 쌓였을 때 창 높이와 메인 스레드 동기 작업 시간을 잰다 (P-M2).
+    private static func queueLoadScene() async {
+        let url = URL(fileURLWithPath: "/tmp/harness-a")
+        let snapshot = OperationProgressSnapshot(totalItems: 10, completedItems: 3, totalBytes: 1000,
+                                                 completedBytes: 300, currentName: "a")
+        var t0 = ProcessInfo.processInfo.systemUptime
+        let jobs = (0..<80).map { _ in center.track(.copy, sources: [url], destination: url) }
+        jobs[0].begin()
+        center.showNow()
+        let trackSeconds = ProcessInfo.processInfo.systemUptime - t0
+        await pause(0.3)
+        let height = center.panelWindow?.frame.height ?? 0
+        let screen = center.panelWindow?.screen?.visibleFrame.height ?? 0
+        if let scroll = center.debugPanel?.debugScrollView, let document = scroll.documentView {
+            let visible = scroll.contentView.bounds.height
+            document.scroll(NSPoint(x: 0, y: document.frame.height - visible))
+            let bottom = scroll.contentView.bounds.maxY
+            let lastRow = center.debugPanel?.debugRows.last.map { $0.convert($0.bounds, to: document).maxY } ?? 0
+            check("80개 작업 줄 목록 스크롤", document.frame.height > visible && abs(bottom - lastRow) < 1,
+                  "목록 \(Int(document.frame.height)) 보임 \(Int(visible)) 끝 \(Int(bottom)) 마지막 줄 \(Int(lastRow))")
+            document.scroll(.zero)
+        }
+        capture(center.panelWindow, URL(fileURLWithPath: logURL!.deletingLastPathComponent().path)
+            .appendingPathComponent("progress-queue80.png"))
+
+        // 맨 앞 작업의 진행 값이 100번 들어올 때.
+        t0 = ProcessInfo.processInfo.systemUptime
+        for step in 0..<100 {
+            var next = snapshot
+            next.completedBytes = Int64(step * 10)
+            center.debugDeliver(jobs[0], next)
+        }
+        center.debugPanel?.debugFlushResize()
+        let deliverSeconds = ProcessInfo.processInfo.systemUptime - t0
+        // 0.25초 타이머 한 번.
+        t0 = ProcessInfo.processInfo.systemUptime
+        center.debugTick()
+        let tickSeconds = ProcessInfo.processInfo.systemUptime - t0
+
+        // 리뷰와 같은 부하: 줄마다 차례로 시작·취소·끝.
+        t0 = ProcessInfo.processInfo.systemUptime
+        for job in jobs { job.begin(); job.cancel(); job.finish() }
+        center.debugPanel?.debugFlushResize()
+        let cycleSeconds = ProcessInfo.processInfo.systemUptime - t0
+        await wait(3) { center.jobs.isEmpty && !center.isPanelVisible }
+        log(String(format: "MEASURE queue80 height=%.0f screen=%.0f track+show=%.4fs deliver100=%.4fs tick=%.4fs cycle80=%.4fs",
+                   height, screen, trackSeconds, deliverSeconds, tickSeconds, cycleSeconds))
+        check("80개 작업 창 높이 제한", height <= 520 && height < screen, "높이 \(Int(height))")
+        check("80개 작업 정리 후 창 닫힘", center.jobs.isEmpty && !center.isPanelVisible)
+    }
 
     private static var menuItem: NSMenuItem? {
         func find(_ menu: NSMenu?) -> NSMenuItem? {

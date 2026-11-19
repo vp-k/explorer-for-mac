@@ -81,6 +81,106 @@ final class ZIPFilenameEncodingTests: TemporaryDirectoryTestCase {
         XCTAssertEqual(try text(invalid), "not a zip")
     }
 
+    func testLateInvalidHeaderOrEncodingLeavesAllOriginalBytesUnchanged() throws {
+        // The first entry is valid UTF-8 but unflagged. The old one-pass patcher modified it
+        // before discovering a broken second entry, including failures in its ZIP64 extra data.
+        for failure in ["central", "local", "name", "comment", "zip64", "ascii-local", "count"] {
+            let zip = root.appendingPathComponent("late-\(failure).zip")
+            _ = try python(#"""
+            import struct, sys, zipfile
+            path, failure = sys.argv[1:]
+            with zipfile.ZipFile(path, 'w') as z:
+                z.writestr('첫째.txt', b'first payload')
+                z.writestr('second.txt' if failure == 'ascii-local' else '둘째.txt', b'second payload')
+            data = bytearray(open(path, 'rb').read())
+            end = data.rfind(b'PK\x05\x06')
+            central = struct.unpack_from('<I', data, end + 16)[0]
+            positions = []
+            cursor = central
+            for _ in range(2):
+                positions.append(cursor)
+                local = struct.unpack_from('<I', data, cursor + 42)[0]
+                struct.pack_into('<H', data, cursor + 8, 0)
+                struct.pack_into('<H', data, local + 6, 0)
+                sizes = struct.unpack_from('<3H', data, cursor + 28)
+                cursor += 46 + sum(sizes)
+            second = positions[1]
+            local = struct.unpack_from('<I', data, second + 42)[0]
+            if failure == 'central':
+                data[second] = 0
+            elif failure in ('local', 'ascii-local'):
+                data[local] = 0
+            elif failure == 'name':
+                data[second + 46] = 0xff
+            elif failure == 'comment':
+                struct.pack_into('<H', data, second + 32, 1)
+                data.insert(cursor, 0xff)
+                end += 1
+                struct.pack_into('<I', data, end + 12, len(data) - 22 - central)
+            elif failure == 'zip64':
+                struct.pack_into('<I', data, second + 42, 0xffffffff)
+            elif failure == 'count':
+                struct.pack_into('<2H', data, end + 8, 1, 1)
+            open(path, 'wb').write(data)
+            """#, arguments: [zip.path, failure])
+            let before = try Data(contentsOf: zip)
+            XCTAssertThrowsError(try ZIPFilenameEncoding.markUTF8(in: zip), failure)
+            XCTAssertEqual(try Data(contentsOf: zip), before, failure)
+        }
+    }
+
+    func testValidUnflaggedUTF8EntriesArePatchedOnlyAtFlagBytes() throws {
+        let zip = root.appendingPathComponent("unflagged.zip")
+        _ = try python(#"""
+        import struct, sys, zipfile
+        path = sys.argv[1]
+        with zipfile.ZipFile(path, 'w') as z:
+            z.writestr('한글.txt', b'payload')
+            z.writestr('plain.txt', b'ASCII payload')
+        data = bytearray(open(path, 'rb').read())
+        local, central = data.index(b'PK\x03\x04'), data.index(b'PK\x01\x02')
+        struct.pack_into('<H', data, local + 6, 0)
+        struct.pack_into('<H', data, central + 8, 0)
+        open(path, 'wb').write(data)
+        """#, arguments: [zip.path])
+        let before = try Data(contentsOf: zip)
+        try ZIPFilenameEncoding.markUTF8(in: zip)
+        let after = try Data(contentsOf: zip)
+        XCTAssertEqual(before.count, after.count)
+        XCTAssertEqual(zipBytesChanged(before, after), 2)
+        XCTAssertEqual(try validatedEntries(zip), ["한글.txt", "plain.txt"])
+        try ZIPFilenameEncoding.markUTF8(in: zip)
+        XCTAssertEqual(try Data(contentsOf: zip), after)
+    }
+
+    private func zipBytesChanged(_ before: Data, _ after: Data) -> Int {
+        zip(before, after).filter { $0 != $1 }.count
+    }
+
+    func testLateWriteFailureLeavesOriginalArchiveUnchangedAndRemovesStaging() throws {
+        let source = try file("source/한글.txt", "payload")
+        let archives = try folder("archives")
+        let archive = try resultURL(FileOperations.compress([source], in: archives))
+        var before = try Data(contentsOf: archive)
+        let local = try XCTUnwrap(before.range(of: Data([0x50, 0x4b, 0x03, 0x04]))).lowerBound
+        let central = try XCTUnwrap(before.range(of: Data([0x50, 0x4b, 0x01, 0x02]))).lowerBound
+        before[local + 7] &= ~UInt8(0x08)
+        before[central + 9] &= ~UInt8(0x08)
+        try before.write(to: archive)
+        var writes = 0
+        XCTAssertThrowsError(try ZIPFilenameEncoding.markUTF8(in: archive, writeFlag: { file, offset, data in
+            writes += 1
+            if writes == 2 { throw POSIXError(.ENOSPC) }
+            try file.seek(toOffset: offset)
+            try file.write(contentsOf: data)
+        })) { error in
+            XCTAssertEqual((error as? POSIXError)?.code, .ENOSPC)
+        }
+        XCTAssertEqual(writes, 2)
+        XCTAssertEqual(try Data(contentsOf: archive), before)
+        XCTAssertEqual(try names(in: archives), [archive.lastPathComponent])
+    }
+
     private func validatedEntries(_ zip: URL) throws -> [String] {
         let output = root.appendingPathComponent("python-extracted-\(UUID().uuidString)")
         let data = try python(#"""

@@ -91,6 +91,9 @@ final class ProgressJob {
 
     var isCancelled: Bool { ticket.isCancelled }
 
+    /// 지금 떠 있는 충돌 질문을 닫는다. 질문을 띄운 쪽이 걸고, 질문이 끝나면 nil 로 되돌린다 (P-M1).
+    var cancelHandler: (() -> Void)?
+
     fileprivate init(kind: Kind, sources: [URL], destination: URL?) {
         self.kind = kind
         itemCount = sources.count
@@ -120,9 +123,13 @@ final class ProgressJob {
         changed()
     }
 
+    /// 열린 충돌 질문도 '취소'로 닫아 큐의 다음 작업이 이어지게 한다.
     func cancel() {
         ticket.cancel()
         changed()
+        let handler = cancelHandler
+        cancelHandler = nil
+        handler?()
     }
 
     func finish() {
@@ -154,7 +161,7 @@ final class ProgressJob {
         return Double(last.bytes - first.bytes) / (last.time - first.time)
     }
 
-    private func changed() { center?.jobChanged() }
+    private func changed() { center?.jobChanged(self) }
 }
 
 /// 앱 전체의 파일 작업 진행률. 창은 탐색기 창과 따로 떠 있어 모든 창을 닫아도 보인다 (R1).
@@ -167,7 +174,7 @@ final class FileProgressCenter {
 
     private(set) var jobs: [ProgressJob] = []
     /// 작업이 끝나면 앱을 종료하기로 했다 (R1). 창 아래에 알린다.
-    var quitsWhenDone = false { didSet { if quitsWhenDone != oldValue { jobChanged() } } }
+    var quitsWhenDone = false { didSet { if quitsWhenDone != oldValue { panel?.setQuitNotice(quitsWhenDone) } } }
     private var panel: ProgressPanelController?
     private var timer: Timer?
     /// 사용자가 창을 닫았다. 새 작업이 들어오기 전까지 다시 띄우지 않는다.
@@ -182,28 +189,37 @@ final class FileProgressCenter {
         jobs.append(job)
         dismissed = false
         startTimer()
-        jobChanged()
+        // 창이 있으면 줄 하나만 덧붙인다. 다른 줄은 다시 그리지 않는다 (P-M2).
+        panel?.insert(job)
+        showIfNeeded()
         return job
     }
 
     fileprivate func remove(_ job: ProgressJob) {
         jobs.removeAll { $0 === job }
+        panel?.remove(job)
         if jobs.isEmpty {
             timer?.invalidate()
             timer = nil
             panel?.window?.orderOut(nil)
-            panel?.update(jobs: [], quitsWhenDone: quitsWhenDone)
         }
-        jobChanged()
     }
 
     fileprivate func deliver(_ id: UUID) {
         guard let job = jobs.first(where: { $0.ticket.id == id }), let snapshot = job.ticket.take() else { return }
         job.apply(snapshot)
-        refresh()
+        jobChanged(job)
     }
 
-    fileprivate func jobChanged() { refresh() }
+    /// 바뀐 작업의 줄만 고친다.
+    fileprivate func jobChanged(_ job: ProgressJob) {
+        guard !jobs.isEmpty else { return }
+        if isPanelVisible {
+            panel?.refresh(job)
+        } else {
+            showIfNeeded()
+        }
+    }
 
     /// 진행 중이거나 기다리는 작업이 있는지. 창 메뉴 항목을 켜고 끈다.
     var hasJobs: Bool { !jobs.isEmpty }
@@ -228,19 +244,24 @@ final class FileProgressCenter {
         guard timer == nil else { return }
         // 0.5초 기준 확인과 남은 시간 갱신을 함께 한다. 진행 값 갱신은 deliver 가 따로 한다.
         let timer = Timer(timeInterval: 0.25, repeats: true) { _ in
-            MainActor.assumeIsolated { FileProgressCenter.shared.refresh() }
+            MainActor.assumeIsolated { FileProgressCenter.shared.tick() }
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
 
-    private func refresh() {
+    /// 남은 시간은 실행 중인 줄에만 있으므로 그 줄만 고친다.
+    fileprivate func tick() {
         guard !jobs.isEmpty else { return }
         if isPanelVisible {
-            panel?.update(jobs: jobs, quitsWhenDone: quitsWhenDone)
-        } else if shouldShow {
-            present()
+            for job in jobs where job.phase == .running && !job.isCancelled { panel?.refresh(job) }
+        } else {
+            showIfNeeded()
         }
+    }
+
+    private func showIfNeeded() {
+        if !isPanelVisible, shouldShow { present() }
     }
 
     private func present() {
@@ -249,7 +270,8 @@ final class FileProgressCenter {
             controller.onDismiss = { [weak self] in self?.dismissed = true }
             panel = controller
         }
-        panel?.update(jobs: jobs, quitsWhenDone: quitsWhenDone)
+        // 숨어 있는 동안 고치지 않은 줄을 한 번에 맞춘다.
+        panel?.sync(jobs: jobs, quitsWhenDone: quitsWhenDone)
         panel?.present()
     }
 }
@@ -261,14 +283,23 @@ final class FileProgressCenter {
 final class ProgressPanelController: NSWindowController, NSWindowDelegate {
     var onDismiss: (() -> Void)?
     private let stack = NSStackView()
+    private let scroll = NSScrollView()
     private let footer = UI.label("", size: Theme.Font.secondary, color: Theme.secondaryText)
     private var rows: [ObjectIdentifier: ProgressRowView] = [:]
     private var placed = false
     /// 종료 예정 문구가 없을 때와 있을 때의 아래쪽 끝. 숨긴 문구가 자리를 차지하지 않게 바꿔 끼운다.
-    private var stackBottom: NSLayoutConstraint!
+    private var scrollBottom: NSLayoutConstraint!
     private var footerBottom: NSLayoutConstraint!
+    /// 줄 목록이 보이는 높이. 줄이 많으면 창 최대 높이에서 멈추고 스크롤한다.
+    private var scrollHeight: NSLayoutConstraint!
+    /// 한 이벤트 차례에 줄이 여러 번 바뀌어도 창 크기는 한 번만 다시 잰다.
+    private var resizeScheduled = false
 
     static let width: CGFloat = 460
+    /// 창 최대 높이. 화면이 낮으면 화면 높이의 3/4 까지만 쓴다 (P-M2).
+    static let maxHeight: CGFloat = 520
+    /// 제목 표시줄 높이.
+    private static let titleInset: CGFloat = 32
 
     init() {
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 140),
@@ -283,6 +314,8 @@ final class ProgressPanelController: NSWindowController, NSWindowDelegate {
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
+        // 충돌 질문이 독립 모달로 떠 있어도 취소 단추를 누를 수 있게 한다 (P-M1).
+        panel.worksWhenModal = true
         super.init(window: panel)
         panel.delegate = self
 
@@ -294,29 +327,48 @@ final class ProgressPanelController: NSWindowController, NSWindowDelegate {
         stack.alignment = .leading
         stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
+        let document = FlippedView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(stack)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.documentView = document
         footer.isHidden = true
-        background.addSubview(stack)
+        footer.stringValue = "모든 작업이 끝나면 Explorer 를 종료합니다."
+        background.addSubview(scroll)
         background.addSubview(footer)
+        let clip = scroll.contentView
+        scrollHeight = scroll.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             background.widthAnchor.constraint(equalToConstant: Self.width),
             // 제목 표시줄 높이만큼 비운다.
-            stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 32),
-            stack.leadingAnchor.constraint(equalTo: background.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: background.trailingAnchor),
-            footer.topAnchor.constraint(equalTo: stack.bottomAnchor, constant: Theme.Space.xs),
+            scroll.topAnchor.constraint(equalTo: background.topAnchor, constant: Self.titleInset),
+            scroll.leadingAnchor.constraint(equalTo: background.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: background.trailingAnchor),
+            scrollHeight,
+            document.topAnchor.constraint(equalTo: clip.topAnchor),
+            document.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+            document.widthAnchor.constraint(equalTo: clip.widthAnchor),
+            stack.topAnchor.constraint(equalTo: document.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor),
+            footer.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: Theme.Space.xs),
             footer.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: Theme.Space.l + 40),
             footer.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -Theme.Space.l),
         ])
-        stackBottom = stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -Theme.Space.xs)
+        scrollBottom = scroll.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -Theme.Space.xs)
         footerBottom = footer.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -Theme.Space.l)
-        stackBottom.isActive = true
+        scrollBottom.isActive = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func present() {
         guard let window else { return }
-        window.layoutIfNeeded()
+        resizeKeepingTop()
         if !placed {
             placed = true
             place(window)
@@ -337,39 +389,95 @@ final class ProgressPanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    func update(jobs: [ProgressJob], quitsWhenDone: Bool) {
-        guard let window else { return }
+    /// 창을 처음 만들었거나 숨어 있다 다시 보일 때 줄 전체를 작업 목록에 맞춘다.
+    func sync(jobs: [ProgressJob], quitsWhenDone: Bool) {
         let ids = Set(jobs.map(ObjectIdentifier.init))
         for (id, row) in rows where !ids.contains(id) {
             row.removeFromSuperview()
             rows[id] = nil
         }
-        for (index, job) in jobs.enumerated() {
-            let id = ObjectIdentifier(job)
-            let row = rows[id] ?? {
-                let row = ProgressRowView(job: job)
-                rows[id] = row
-                stack.addArrangedSubview(row)
-                row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-                return row
-            }()
-            row.showsDivider = index > 0
-            row.refresh()
+        for job in jobs {
+            if let row = rows[ObjectIdentifier(job)] { row.refresh() } else { insert(job) }
         }
-        footer.stringValue = "모든 작업이 끝나면 Explorer 를 종료합니다."
+        updateDividers()
+        updateTitle()
+        setQuitNotice(quitsWhenDone)
+    }
+
+    /// 작업 하나를 맨 아래 줄로 덧붙인다. 작업은 큐 순서대로 들어오므로 끝에 붙이면 순서가 맞다.
+    func insert(_ job: ProgressJob) {
+        let id = ObjectIdentifier(job)
+        guard rows[id] == nil else { return }
+        let row = ProgressRowView(job: job)
+        row.showsDivider = !stack.arrangedSubviews.isEmpty
+        rows[id] = row
+        stack.addArrangedSubview(row)
+        row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        row.refresh()
+        updateTitle()
+        setNeedsResize()
+    }
+
+    func remove(_ job: ProgressJob) {
+        guard let row = rows.removeValue(forKey: ObjectIdentifier(job)) else { return }
+        row.removeFromSuperview()
+        updateDividers()
+        updateTitle()
+        setNeedsResize()
+    }
+
+    /// 한 줄만 다시 채운다. 줄 높이가 바뀌었을 때만 창 크기를 다시 잰다.
+    func refresh(_ job: ProgressJob) {
+        guard let row = rows[ObjectIdentifier(job)] else { return }
+        if row.refresh() { setNeedsResize() }
+    }
+
+    func setQuitNotice(_ quitsWhenDone: Bool) {
+        guard footer.isHidden == quitsWhenDone else { return }
         footer.isHidden = !quitsWhenDone
-        stackBottom.isActive = !quitsWhenDone
+        scrollBottom.isActive = !quitsWhenDone
         footerBottom.isActive = quitsWhenDone
-        window.title = jobs.count > 1 ? "파일 작업 \(jobs.count)개" : "파일 작업"
-        resizeKeepingTop(window)
+        setNeedsResize()
+    }
+
+    private func updateDividers() {
+        for (index, view) in stack.arrangedSubviews.enumerated() {
+            (view as? ProgressRowView)?.showsDivider = index > 0
+        }
+    }
+
+    private func updateTitle() {
+        let title = rows.count > 1 ? "파일 작업 \(rows.count)개" : "파일 작업"
+        if window?.title != title { window?.title = title }
+    }
+
+    private func setNeedsResize() {
+        guard !resizeScheduled else { return }
+        resizeScheduled = true
+        // 모달 대화상자가 도는 동안에도 크기를 맞추도록 공통 모드에서 부른다.
+        RunLoop.main.perform(inModes: [.common]) {
+            MainActor.assumeIsolated {
+                guard self.resizeScheduled else { return }
+                self.resizeScheduled = false
+                self.resizeKeepingTop()
+            }
+        }
     }
 
     /// 작업 줄이 늘거나 줄면 위쪽 모서리를 그대로 두고 높이만 바꾼다.
-    private func resizeKeepingTop(_ window: NSWindow) {
-        guard let content = window.contentView else { return }
+    /// 줄이 최대 높이를 넘으면 창은 그 높이에서 멈추고 줄 목록을 스크롤한다.
+    private func resizeKeepingTop() {
+        guard let window, let content = window.contentView else { return }
+        let rowsHeight = stack.fittingSize.height
+        // 줄 목록을 뺀 제목·여백·종료 문구 높이.
+        let chrome = content.fittingSize.height - scrollHeight.constant
+        let screen = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? Self.maxHeight
+        let limit = min(Self.maxHeight, (screen * 0.75).rounded(.down))
+        let listHeight = max(0, min(rowsHeight, limit - chrome))
+        if abs(scrollHeight.constant - listHeight) > 0.5 { scrollHeight.constant = listHeight }
         content.layoutSubtreeIfNeeded()
-        let height = content.fittingSize.height
-        var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: NSSize(width: Self.width, height: height)))
+        var frame = window.frameRect(forContentRect: NSRect(origin: .zero,
+                                                            size: NSSize(width: Self.width, height: chrome + listHeight)))
         guard abs(frame.height - window.frame.height) > 0.5 else { return }
         frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
         window.setFrame(frame, display: true)
@@ -411,6 +519,14 @@ final class ProgressRowView: NSView {
     init(job: ProgressJob) {
         self.job = job
         super.init(frame: .zero)
+        let symbol: String
+        switch job.kind {
+        case .copy: symbol = "doc.on.doc"
+        case .move: symbol = "arrow.right.doc.on.clipboard"
+        case .trash: symbol = "trash"
+        case .duplicate: symbol = "plus.square.on.square"
+        }
+        icon.image = Theme.symbol(symbol, nil, size: 22)
         translatesAutoresizingMaskIntoConstraints = false
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.imageScaling = .scaleProportionallyUpOrDown
@@ -482,27 +598,32 @@ final class ProgressRowView: NSView {
         job.cancel()
     }
 
-    /// 막대와 남은 양 줄을 보일지 정한다. 숨기면 줄 높이도 그만큼 줄인다.
-    private func setLayout(bar showsBar: Bool, detail showsDetail: Bool) {
-        bar.isHidden = !showsBar
-        remaining.isHidden = !showsDetail
-        rate.isHidden = !showsDetail
-        guard nameBelowBar.isActive != showsBar || bottomBelowRemaining.isActive != showsDetail else { return }
+    /// 막대와 남은 양 줄을 보일지 정한다. 숨기면 줄 높이도 그만큼 줄인다. 높이가 바뀌면 true.
+    private func setLayout(bar showsBar: Bool, detail showsDetail: Bool) -> Bool {
+        if bar.isHidden == showsBar { bar.isHidden = !showsBar }
+        if remaining.isHidden == showsDetail { remaining.isHidden = !showsDetail }
+        if rate.isHidden == showsDetail { rate.isHidden = !showsDetail }
+        guard nameBelowBar.isActive != showsBar || bottomBelowRemaining.isActive != showsDetail else { return false }
         NSLayoutConstraint.deactivate([nameBelowBar, nameBelowPercent, bottomBelowRemaining, bottomBelowName])
         NSLayoutConstraint.activate([showsBar ? nameBelowBar : nameBelowPercent,
                                      showsDetail ? bottomBelowRemaining : bottomBelowName])
+        return true
     }
 
-    func refresh() {
-        let symbol: String
+    /// 값이 같으면 글자를 다시 넣지 않는다. 다시 넣으면 그 칸을 다시 재고 그린다.
+    private static func set(_ label: NSTextField, _ value: String) {
+        if label.stringValue != value { label.stringValue = value }
+    }
+
+    /// 작업 상태로 줄을 다시 채운다. 줄 높이가 바뀌면 true.
+    @discardableResult
+    func refresh() -> Bool {
         let verb: String
         switch job.kind {
-        case .copy: symbol = "doc.on.doc"; verb = "복사"
-        case .move: symbol = "arrow.right.doc.on.clipboard"; verb = "이동"
-        case .trash: symbol = "trash"; verb = "이동"
-        case .duplicate: symbol = "plus.square.on.square"; verb = "복제"
+        case .copy: verb = "복사"
+        case .move, .trash: verb = "이동"
+        case .duplicate: verb = "복제"
         }
-        icon.image = Theme.symbol(symbol, nil, size: 22)
         let target: String
         switch job.kind {
         case .trash: target = " 휴지통으로"
@@ -510,58 +631,64 @@ final class ProgressRowView: NSView {
         case .copy, .move: target = job.destinationFolder.map { " '\($0)'(으)로" } ?? ""
         }
         let header = "\(job.itemCount)개 항목을 '\(job.sourceFolder)'에서\(target) \(verb)하는 중"
-        title.stringValue = header
-        title.toolTip = header
+        if title.stringValue != header {
+            title.stringValue = header
+            title.toolTip = header
+        }
 
         let snapshot = job.snapshot
         let fraction = job.shownFraction
-        cancelButton.isEnabled = !job.isCancelled
+        if cancelButton.isEnabled == job.isCancelled { cancelButton.isEnabled = !job.isCancelled }
 
+        let percentText: String, nameText: String, remainingText: String, rateText: String
+        let showsBar: Bool, showsDetail: Bool
         if job.isCancelled {
             let started = job.phase == .running
-            percent.stringValue = started ? "취소하는 중…" : "취소됨"
-            name.stringValue = started ? "지금까지 한 작업을 되돌리고 있습니다." : "시작하지 않고 건너뜁니다."
-            remaining.stringValue = ""
-            rate.stringValue = ""
+            percentText = started ? "취소하는 중…" : "취소됨"
+            nameText = started ? "지금까지 한 작업을 되돌리고 있습니다." : "시작하지 않고 건너뜁니다."
+            (remainingText, rateText) = ("", "")
             bar.fraction = fraction
             bar.isDimmed = true
-            setLayout(bar: started, detail: false)
-            setAccessibilityLabel("\(header), \(percent.stringValue)")
-            return
-        }
-        bar.isDimmed = false
-        switch job.phase {
-        case .waiting, .preparing:
-            percent.stringValue = job.phase == .waiting ? "대기 중" : "준비 중"
-            name.stringValue = job.phase == .waiting ? "앞 작업이 끝나면 시작합니다." : "충돌 항목을 확인하고 있습니다."
-            remaining.stringValue = ""
-            rate.stringValue = ""
-            bar.fraction = 0
-            setLayout(bar: false, detail: false)
-        case .running:
-            guard let snapshot else {
-                percent.stringValue = "0% 완료"
-                name.stringValue = "항목 수를 세는 중…"
-                remaining.stringValue = ""
-                rate.stringValue = ""
+            (showsBar, showsDetail) = (started, false)
+        } else {
+            bar.isDimmed = false
+            switch job.phase {
+            case .waiting, .preparing:
+                percentText = job.phase == .waiting ? "대기 중" : "준비 중"
+                nameText = job.phase == .waiting ? "앞 작업이 끝나면 시작합니다." : "충돌 항목을 확인하고 있습니다."
+                (remainingText, rateText) = ("", "")
                 bar.fraction = 0
-                setLayout(bar: true, detail: false)
-                break
-            }
-            setLayout(bar: true, detail: true)
-            percent.stringValue = "\(Int((fraction * 100).rounded(.down)))% 완료"
-            bar.fraction = fraction
-            name.stringValue = snapshot.currentName.isEmpty ? " " : "이름: \(snapshot.currentName)"
-            let items = max(0, snapshot.totalItems - snapshot.completedItems)
-            let bytes = max(0, snapshot.totalBytes - snapshot.completedBytes)
-            remaining.stringValue = "남은 항목: \(items)개 (\(Self.size(bytes)))"
-            if let speed = job.bytesPerSecond, speed > 0 {
-                rate.stringValue = "\(Self.size(Int64(speed)))/초 · \(Self.duration(Double(bytes) / speed))"
-            } else {
-                rate.stringValue = "남은 시간 계산 중…"
+                (showsBar, showsDetail) = (false, false)
+            case .running:
+                if let snapshot {
+                    percentText = "\(Int((fraction * 100).rounded(.down)))% 완료"
+                    bar.fraction = fraction
+                    nameText = snapshot.currentName.isEmpty ? " " : "이름: \(snapshot.currentName)"
+                    let items = max(0, snapshot.totalItems - snapshot.completedItems)
+                    let bytes = max(0, snapshot.totalBytes - snapshot.completedBytes)
+                    remainingText = "남은 항목: \(items)개 (\(Self.size(bytes)))"
+                    if let speed = job.bytesPerSecond, speed > 0 {
+                        rateText = "\(Self.size(Int64(speed)))/초 · \(Self.duration(Double(bytes) / speed))"
+                    } else {
+                        rateText = "남은 시간 계산 중…"
+                    }
+                    (showsBar, showsDetail) = (true, true)
+                } else {
+                    percentText = "0% 완료"
+                    nameText = "항목 수를 세는 중…"
+                    (remainingText, rateText) = ("", "")
+                    bar.fraction = 0
+                    (showsBar, showsDetail) = (true, false)
+                }
             }
         }
-        setAccessibilityLabel("\(header), \(percent.stringValue)")
+        Self.set(percent, percentText)
+        Self.set(name, nameText)
+        Self.set(remaining, remainingText)
+        Self.set(rate, rateText)
+        let label = "\(header), \(percentText)"
+        if accessibilityLabel() != label { setAccessibilityLabel(label) }
+        return setLayout(bar: showsBar, detail: showsDetail)
     }
 
     private static let byteFormatter: ByteCountFormatter = {
@@ -619,5 +746,36 @@ final class ProgressBarView: NSView {
 extension ProgressJob {
     /// 하네스가 Core 없이 진행 값을 넣어 본다.
     func debugApply(_ snapshot: OperationProgressSnapshot) { apply(snapshot) }
+}
+
+extension FileProgressCenter {
+    /// 백그라운드에서 진행 값 하나가 도착한 것처럼 처리한다.
+    func debugDeliver(_ job: ProgressJob, _ snapshot: OperationProgressSnapshot) {
+        job.apply(snapshot)
+        jobChanged(job)
+    }
+
+    /// 0.25초 타이머 한 번.
+    func debugTick() { tick() }
+
+    var debugPanel: ProgressPanelController? { panel }
+}
+
+extension ProgressRowView {
+    /// 줄의 취소 단추를 누른다.
+    func debugPressCancel() { cancelButton.performClick(nil) }
+}
+
+extension ProgressPanelController {
+    /// 작업 줄. 하네스가 개수와 높이를 본다.
+    var debugRows: [NSView] { stack.arrangedSubviews }
+    var debugScrollView: NSScrollView { scroll }
+
+    /// 미뤄 둔 창 크기 맞춤을 지금 한다. 측정에 그 시간까지 넣으려고 쓴다.
+    func debugFlushResize() {
+        guard resizeScheduled else { return }
+        resizeScheduled = false
+        resizeKeepingTop()
+    }
 }
 #endif

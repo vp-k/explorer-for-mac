@@ -63,6 +63,20 @@ public struct OperationResult: Sendable {
 }
 
 public enum FileOperations {
+    /// Undo/Redo에서 기록을 완전히 폐기할 때 호출한다. 이 프로세스가 소유한 숨김 백업만 삭제한다.
+    /// 다른 유지 중인 기록에서도 사용하는 기록은 폐기하지 말 것. 반복 호출은 안전하다.
+    @discardableResult
+    public static func discardBackups(for record: FileOperationRecord) throws -> [URL] {
+        try FileOperationArtifacts.shared.discardBackups(for: record)
+    }
+
+    /// 앱 시작 시 백그라운드에서 호출한다. 소유 기록과 파일 식별자가 일치하는 종료된 세션만 정리한다.
+    /// 최소 24시간 보존하며, 완료가 확인되지 않은 원본 백업은 복구용으로 남긴다.
+    @discardableResult
+    public static func cleanupStaleArtifacts(olderThan date: Date) throws -> [URL] {
+        try FileOperationArtifacts.shared.cleanupStaleArtifacts(olderThan: date)
+    }
+
     /// 같은 폴더로 복사하면 Windows 처럼 "이름 - 복사본.ext", "이름 - 복사본 (2).ext".
     public static func copy(_ sources: [URL], to destination: URL, conflict: ConflictPolicy) throws -> OperationResult {
         try copy(sources, to: destination, conflict: { _ in conflict })
@@ -236,7 +250,10 @@ public enum FileOperations {
 
     // Internal injection point to exercise filesystems that cannot provide a Trash directory.
     static func undo(_ record: FileOperationRecord, trashItem: @escaping (URL) throws -> URL) throws -> FileOperationRecord? {
-        try performUndo(record, excluding: backupExclusions(for: record), trashItem: trashItem)
+        try FileOperationArtifacts.shared.protectBackups(referencedBy: record)
+        let inverse = try performUndo(record, excluding: backupExclusions(for: record), trashItem: trashItem)
+        FileOperationArtifacts.shared.commitBackups(referencedBy: inverse)
+        return inverse
     }
 
     private static func performUndo(_ record: FileOperationRecord, excluding: [URL],
@@ -570,7 +587,9 @@ public enum FileOperations {
         } catch {
             try rollBack(state.rollback, after: error)
         }
-        return OperationResult(record: combinedRecord(state.records), resultURLs: urls, skipped: state.skipped)
+        let record = combinedRecord(state.records)
+        FileOperationArtifacts.shared.commitBackups(referencedBy: record)
+        return OperationResult(record: record, resultURLs: urls, skipped: state.skipped)
     }
 
     private static func transferItem(_ source: URL, to proposed: URL, moving: Bool,
@@ -703,8 +722,7 @@ public enum FileOperations {
         guard isSameVolume(url, parent) else {
             throw FileOperationError.failed("같은 볼륨에 백업 폴더가 없습니다: \(url.path)")
         }
-        let backup = parent.appendingPathComponent(".explorer-backup-\(UUID().uuidString)")
-        try manager.moveItem(at: url, to: backup)
+        let backup = try FileOperationArtifacts.shared.makeBackup(of: url, in: parent)
         return MovePair(from: url, to: backup)
     }
 
@@ -736,8 +754,9 @@ public enum FileOperations {
             state.rollback.append { try manager.moveItem(at: target, to: source) }
             try state.progress?.complete(source)
         } else {
-            let staging = target.deletingLastPathComponent().appendingPathComponent(".explorer-copy-\(UUID().uuidString)")
-            defer { try? manager.removeItem(at: staging) }
+            let container = try FileOperationArtifacts.shared.makeCopyStaging(in: target.deletingLastPathComponent())
+            defer { try? FileOperationArtifacts.shared.removeCopyStaging(container) }
+            let staging = container.appendingPathComponent("payload")
             if let progress = state.progress { try progress.copy(source, to: staging) }
             else { try manager.copyItem(at: source, to: staging) }
             try state.progress?.checkCancellation()
