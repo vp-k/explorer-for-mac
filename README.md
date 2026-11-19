@@ -36,7 +36,7 @@ Also included:
 - Details and icon views, preview pane, Properties window
 - Copy progress window with speed, time left and Cancel. Cancel rolls back.
 - Undo and redo for file operations, Windows-style conflict dialog
-- Compress to ZIP and Extract All. Non-English file names open correctly on Windows.
+- Compress to ZIP and Extract All. ZIP entries are marked as UTF-8 for non-English file names.
 - Light and dark themes. English and Korean, following the system language.
 
 ## Install
