@@ -21,7 +21,7 @@ final class AddressBar: NSView, NSTextFieldDelegate {
         layer?.cornerRadius = Theme.Radius.control
         layer?.borderWidth = 1
         setAccessibilityRole(.group)
-        setAccessibilityLabel("주소 표시줄")
+        setAccessibilityLabel(L("주소 표시줄"))
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.imageScaling = .scaleProportionallyUpOrDown
@@ -44,7 +44,7 @@ final class AddressBar: NSView, NSTextFieldDelegate {
         editField.cell?.isScrollable = true
         editField.delegate = self
         editField.isHidden = true
-        editField.setAccessibilityLabel("주소")
+        editField.setAccessibilityLabel(L("주소"))
         addSubview(editField)
 
         NSLayoutConstraint.activate([
@@ -100,9 +100,9 @@ final class AddressBar: NSView, NSTextFieldDelegate {
             chevron.font = .systemFont(ofSize: 15, weight: .regular)
             chevron.horizontalPadding = 3
             chevron.fixedSize = NSSize(width: 18, height: 26)
-            chevron.setAccessibilityLabel("하위 폴더")
+            chevron.setAccessibilityLabel(L("하위 폴더"))
             chevron.tag = index
-            chevron.toolTip = "\(crumb.title)의 하위 폴더"
+            chevron.toolTip = L("%@의 하위 폴더", crumb.title)
             crumbStack.addArrangedSubview(chevron)
             // 좁으면 앞쪽 조각부터 숨긴다.
             let priority = NSStackView.VisibilityPriority(rawValue: Float(500 + index * 10))
@@ -153,7 +153,7 @@ final class AddressBar: NSView, NSTextFieldDelegate {
             while !rest.isEmpty {
                 let page = rest.prefix(Self.menuPageSize)
                 rest = rest.dropFirst(Self.menuPageSize)
-                let more = NSMenuItem(title: "더 보기 (\(page.count + rest.count)개 더)", action: nil, keyEquivalent: "")
+                let more = NSMenuItem(title: L("더 보기 (%d개 더)", page.count + rest.count), action: nil, keyEquivalent: "")
                 let submenu = NSMenu()
                 for (title, url) in page {
                     addFolderItem(to: submenu, title: title, url: url, icon: false)
@@ -165,7 +165,7 @@ final class AddressBar: NSView, NSTextFieldDelegate {
             }
         }
         if menu.items.isEmpty {
-            let empty = NSMenuItem(title: "하위 폴더 없음", action: nil, keyEquivalent: "")
+            let empty = NSMenuItem(title: L("하위 폴더 없음"), action: nil, keyEquivalent: "")
             empty.isEnabled = false
             menu.addItem(empty)
         }

@@ -11,6 +11,11 @@ func L(_ key: String, _ arguments: CVarArg...) -> String {
     String(format: L(key), locale: Locale.current, arguments: arguments)
 }
 
+/// 항목 개수 문구. 영어 단수·복수를 맞추려고 1개일 때는 따로 키를 둔다 ("1 item" / "16 items").
+func L(count: Int) -> String {
+    count == 1 ? L("1개 항목") : L("%d개 항목", count)
+}
+
 enum AppLanguage {
     /// 앱이 영어로 표시되는가. 시스템 언어 설정에 따라 번들이 고른 언어를 따른다.
     static let isEnglish = Bundle.main.localizedString(forKey: "__language__", value: nil, table: nil) == "en"

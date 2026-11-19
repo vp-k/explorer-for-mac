@@ -51,7 +51,7 @@ public struct FileItem: Hashable, Identifiable, Sendable {
             isSymlink: own.isSymbolicLink == true,
             size: directory ? nil : values.fileSize.map(Int64.init),
             dateModified: values.contentModificationDate, dateCreated: values.creationDate,
-            typeDescription: directory && !package ? "파일 폴더" : (type?.localizedDescription ?? "파일"),
+            typeDescription: directory && !package ? CL("파일 폴더") : (type?.localizedDescription ?? CL("파일")),
             fileExtension: ext
         )
     }

@@ -19,21 +19,21 @@ final class CommandBar: FillView {
         bottomDivider = true
         typealias B = BrowserViewController
 
-        newButton = ThemedButton(title: "새로 만들기", symbol: Theme.symbol("plus", "새로 만들기", size: 12, weight: .semibold),
+        newButton = ThemedButton(title: L("새로 만들기"), symbol: Theme.symbol("plus", L("새로 만들기"), size: 12, weight: .semibold),
                                  target: self, action: #selector(showNewMenu(_:)))
         newButton.isAccent = true
         newButton.showsMenuIndicator = true
         newButton.horizontalPadding = 12
         newButton.font = .systemFont(ofSize: Theme.Font.body, weight: .medium)
-        cutButton = UI.toolButton("scissors", tip: "잘라내기 (⌘X)", target: browser, action: #selector(B.cut(_:)))
-        copyButton = UI.toolButton("doc.on.doc", tip: "복사 (⌘C)", target: browser, action: #selector(B.copy(_:)))
-        pasteButton = UI.toolButton("doc.on.clipboard", tip: "붙여넣기 (⌘V)", target: browser, action: #selector(B.paste(_:)))
-        renameButton = UI.toolButton("character.cursor.ibeam", tip: "이름 바꾸기 (F2)", target: browser,
+        cutButton = UI.toolButton("scissors", tip: L("잘라내기 (⌘X)"), target: browser, action: #selector(B.cut(_:)))
+        copyButton = UI.toolButton("doc.on.doc", tip: L("복사 (⌘C)"), target: browser, action: #selector(B.copy(_:)))
+        pasteButton = UI.toolButton("doc.on.clipboard", tip: L("붙여넣기 (⌘V)"), target: browser, action: #selector(B.paste(_:)))
+        renameButton = UI.toolButton("character.cursor.ibeam", tip: L("이름 바꾸기 (F2)"), target: browser,
                                      action: #selector(B.renameSelection(_:)))
-        deleteButton = UI.toolButton("trash", tip: "삭제 (Delete)", target: browser, action: #selector(B.moveToTrash(_:)))
-        let sortButton = textButton("정렬", symbol: "arrow.up.arrow.down", action: #selector(showSortMenu(_:)))
-        let viewButton = textButton("보기", symbol: "rectangle.grid.1x2", action: #selector(showViewMenu(_:)))
-        let moreButton = UI.toolButton("ellipsis", tip: "자세히 보기", target: self, action: #selector(showMoreMenu(_:)))
+        deleteButton = UI.toolButton("trash", tip: L("삭제 (Delete)"), target: browser, action: #selector(B.moveToTrash(_:)))
+        let sortButton = textButton(L("정렬"), symbol: "arrow.up.arrow.down", action: #selector(showSortMenu(_:)))
+        let viewButton = textButton(L("보기"), symbol: "rectangle.grid.1x2", action: #selector(showViewMenu(_:)))
+        let moreButton = UI.toolButton("ellipsis", tip: L("자세히 보기"), target: self, action: #selector(showMoreMenu(_:)))
 
         let stack = NSStackView(views: [newButton, separator(), cutButton, copyButton, pasteButton, renameButton,
                                         deleteButton, separator(), sortButton, viewButton, separator(), moreButton])
@@ -107,10 +107,10 @@ final class StatusBar: FillView {
     private let countLabel = UI.label("", size: Theme.Font.status)
     private let selectionLabel = UI.label("", size: Theme.Font.status)
     private let activityLabel = UI.label("", size: Theme.Font.status, color: Theme.secondaryText)
-    private let detailsButton = ThemedButton(symbol: Theme.symbol("list.bullet", "자세히", size: 11), tip: "자세히 (⌘1)",
+    private let detailsButton = ThemedButton(symbol: Theme.symbol("list.bullet", L("자세히"), size: 11), tip: L("자세히 (⌘1)"),
                                              target: nil, action: nil)
-    private let iconsButton = ThemedButton(symbol: Theme.symbol("square.grid.2x2", "큰 아이콘", size: 11),
-                                           tip: "큰 아이콘 (⌘4)", target: nil, action: nil)
+    private let iconsButton = ThemedButton(symbol: Theme.symbol("square.grid.2x2", L("큰 아이콘"), size: 11),
+                                           tip: L("큰 아이콘 (⌘4)"), target: nil, action: nil)
 
     init() {
         super.init(Theme.contentBackground)
@@ -143,9 +143,10 @@ final class StatusBar: FillView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func update(count: Int, selectedCount: Int, selectedSize: String?) {
-        countLabel.stringValue = "\(count)개 항목"
+        countLabel.stringValue = L(count: count)
         if selectedCount > 0 {
-            selectionLabel.stringValue = "\(selectedCount)개 항목 선택함" + (selectedSize.map { " \($0)" } ?? "")
+            selectionLabel.stringValue = (selectedCount == 1 ? L("1개 항목 선택함") : L("%d개 항목 선택함", selectedCount))
+                + (selectedSize.map { " \($0)" } ?? "")
         } else {
             selectionLabel.stringValue = ""
         }

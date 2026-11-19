@@ -1,1 +1,27 @@
 /* Core 영어 문구. 키는 소스의 한국어 원문이다. */
+
+/* File and folder names */
+"%@ - 복사본" = "%@ - Copy";
+"새 폴더" = "New folder";
+"새 텍스트 문서.txt" = "New Text Document.txt";
+"파일 폴더" = "File folder";
+"파일" = "File";
+"홈" = "Home";
+
+/* File operation errors */
+"잘못된 이름입니다: %@" = "The name is invalid: %@";
+"같은 이름의 항목이 이미 있습니다: %@" = "An item with the same name already exists: %@";
+"대상 폴더가 원본 폴더 안에 있습니다: %@" = "The destination folder is inside the source folder: %@";
+"대상 항목이 원본을 포함하고 있습니다: %@" = "The destination item contains the source: %@";
+"항목을 찾을 수 없습니다: %@" = "Item not found: %@";
+"파일 작업이 취소되었습니다." = "The file operation was canceled.";
+"영구 삭제 실패: %@\n%@\n삭제 완료:\n%@" = "Permanent deletion failed: %@\n%@\nDeleted:\n%@";
+"압축할 항목이 없습니다." = "There are no items to compress.";
+"폴더가 아닙니다: %@" = "Not a folder: %@";
+"압축 작업에 실패했습니다 (%d)." = "The archive operation failed (%d).";
+"%@\n복구 실패: %@" = "%@\nRestore failed: %@";
+"휴지통 위치를 확인할 수 없습니다: %@" = "Cannot determine the Recycle Bin location: %@";
+"%@\n숨김 백업 실패: %@" = "%@\nHidden backup failed: %@";
+"안전한 백업 폴더가 없습니다: %@" = "No safe backup folder is available: %@";
+"같은 볼륨에 백업 폴더가 없습니다: %@" = "No backup folder is available on the same volume: %@";
+"ZIP 파일 이름 헤더를 확인할 수 없습니다." = "Cannot verify the ZIP filename headers.";

@@ -12,7 +12,7 @@ final class ThisMacView: NSView {
 
     /// 내 Mac 아이콘. 탭, 주소 상자, 탐색 창이 함께 쓴다.
     static var computerIcon: NSImage {
-        let image = Theme.symbol("desktopcomputer", "내 Mac", size: 13)
+        let image = Theme.symbol("desktopcomputer", L("내 Mac"), size: 13)
         return image.withSymbolConfiguration(.init(paletteColors: [Theme.accent])) ?? image
     }
 
@@ -48,13 +48,13 @@ final class ThisMacView: NSView {
         let volumes = VolumeLister.volumes()
         itemCount = folders.count + volumes.count
 
-        addSection("폴더 (\(folders.count))")
+        addSection(L("폴더 (%d)", folders.count))
         addRows(folders.map { folder in
             CardView(title: folder.title, subtitle: nil, icon: IconCache.shared.icon(for: folder.url),
                      url: folder.url, volume: nil)
         })
         stack.setCustomSpacing(18, after: stack.arrangedSubviews.last ?? stack)
-        addSection("장치 및 드라이브 (\(volumes.count))")
+        addSection(L("장치 및 드라이브 (%d)", volumes.count))
         addRows(volumes.map { volume in
             CardView(title: volume.name, subtitle: CapacityBar.caption(for: volume),
                      icon: IconCache.shared.icon(for: volume.url), url: volume.url, volume: volume)

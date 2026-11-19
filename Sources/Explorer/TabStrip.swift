@@ -45,7 +45,7 @@ final class TabStripView: NSView {
         super.init(frame: frameRect)
         setAccessibilityElement(true)
         setAccessibilityRole(.tabGroup)
-        setAccessibilityLabel("탭")
+        setAccessibilityLabel(L("탭"))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -211,10 +211,10 @@ final class TabStripView: NSView {
             let rect = tabRect(index).intersection(area)
             if !rect.isEmpty { addToolTip(rect, owner: tab.toolTip as NSString, userData: nil) }
         }
-        addToolTip(plusRect, owner: "새 탭 (⌘T)" as NSString, userData: nil)
+        addToolTip(plusRect, owner: L("새 탭 (⌘T)") as NSString, userData: nil)
         if overflows {
-            addToolTip(leftArrowRect, owner: "이전 탭 보기" as NSString, userData: nil)
-            addToolTip(rightArrowRect, owner: "다음 탭 보기" as NSString, userData: nil)
+            addToolTip(leftArrowRect, owner: L("이전 탭 보기") as NSString, userData: nil)
+            addToolTip(rightArrowRect, owner: L("다음 탭 보기") as NSString, userData: nil)
         }
     }
 

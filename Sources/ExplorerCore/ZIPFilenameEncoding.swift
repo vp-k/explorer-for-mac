@@ -17,7 +17,7 @@ enum ZIPFilenameEncoding {
         let file = try FileHandle(forUpdating: original)
         defer { try? file.close() }
         let size = try file.seekToEnd()
-        let invalid = FileOperationError.failed("ZIP 파일 이름 헤더를 확인할 수 없습니다.")
+        let invalid = FileOperationError.failed(CL("ZIP 파일 이름 헤더를 확인할 수 없습니다."))
 
         func read(_ offset: UInt64, _ count: Int) throws -> Data {
             guard offset <= size, UInt64(count) <= size - offset else { throw invalid }

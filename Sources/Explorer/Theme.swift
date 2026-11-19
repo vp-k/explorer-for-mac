@@ -131,7 +131,7 @@ enum FolderIcon {
             return true
         }
         image.cacheMode = .never
-        image.accessibilityDescription = "폴더"
+        image.accessibilityDescription = L("폴더")
         images[key] = image
         return image
     }

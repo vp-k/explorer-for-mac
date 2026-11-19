@@ -19,12 +19,12 @@ enum Location {
     /// 내 Mac 화면과 이동 메뉴에 보이는 표준 폴더.
     static var standardFolders: [(title: String, url: URL)] {
         let dirs: [(String, FileManager.SearchPathDirectory)] = [
-            ("바탕 화면", .desktopDirectory), ("문서", .documentDirectory),
-            ("다운로드", .downloadsDirectory), ("사진", .picturesDirectory),
-            ("음악", .musicDirectory), ("동영상", .moviesDirectory),
+            (L("바탕 화면"), .desktopDirectory), (L("문서"), .documentDirectory),
+            (L("다운로드"), .downloadsDirectory), (L("사진"), .picturesDirectory),
+            (L("음악"), .musicDirectory), (L("동영상"), .moviesDirectory),
         ]
         var result = dirs.compactMap { title, dir in standard(dir).map { (title, $0) } }
-        result.append(("홈", home))
+        result.append((L("홈"), home))
         return result
     }
 
@@ -118,18 +118,19 @@ final class IconCache {
 
 @MainActor
 enum Formats {
-    /// Windows 자세히 보기 식 날짜: "2026-11-01 오후 3:24".
+    /// Windows 자세히 보기 식 날짜. 한국어 "2026-11-01 오후 3:24", 영어 "11/1/2026 3:24 PM".
     static let date: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "yyyy-MM-dd a h:mm"
+        f.locale = Locale(identifier: AppLanguage.isEnglish ? "en_US" : "ko_KR")
+        f.dateFormat = AppLanguage.isEnglish ? "M/d/yyyy h:mm a" : "yyyy-MM-dd a h:mm"
         return f
     }()
 
+    /// 속성 창 날짜. 영어는 "Sunday, November 1, 2026, 3:24:05 PM".
     static let longDate: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "yyyy년 M월 d일 EEEE, a h:mm:ss"
+        f.locale = Locale(identifier: AppLanguage.isEnglish ? "en_US" : "ko_KR")
+        f.dateFormat = AppLanguage.isEnglish ? "EEEE, MMMM d, yyyy, h:mm:ss a" : "yyyy년 M월 d일 EEEE, a h:mm:ss"
         return f
     }()
 

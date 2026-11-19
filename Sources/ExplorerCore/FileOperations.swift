@@ -22,14 +22,14 @@ public enum FileOperationError: LocalizedError, Equatable {
     case failed(String)
     public var errorDescription: String? {
         switch self {
-        case .invalidName(let s): return "잘못된 이름입니다: \(s)"
-        case .alreadyExists(let s): return "같은 이름의 항목이 이미 있습니다: \(s)"
-        case .destinationInsideSource(let s): return "대상 폴더가 원본 폴더 안에 있습니다: \(s)"
-        case .destinationContainsSource(let s): return "대상 항목이 원본을 포함하고 있습니다: \(s)"
-        case .notFound(let s): return "항목을 찾을 수 없습니다: \(s)"
-        case .cancelled: return "파일 작업이 취소되었습니다."
+        case .invalidName(let s): return CL("잘못된 이름입니다: %@", s)
+        case .alreadyExists(let s): return CL("같은 이름의 항목이 이미 있습니다: %@", s)
+        case .destinationInsideSource(let s): return CL("대상 폴더가 원본 폴더 안에 있습니다: %@", s)
+        case .destinationContainsSource(let s): return CL("대상 항목이 원본을 포함하고 있습니다: %@", s)
+        case .notFound(let s): return CL("항목을 찾을 수 없습니다: %@", s)
+        case .cancelled: return CL("파일 작업이 취소되었습니다.")
         case .partialDeletion(let deleted, let failed, let reason):
-            return "영구 삭제 실패: \(failed.path)\n\(reason)\n삭제 완료:\n\(deleted.map(\.path).joined(separator: "\n"))"
+            return CL("영구 삭제 실패: %@\n%@\n삭제 완료:\n%@", failed.path, reason, deleted.map(\.path).joined(separator: "\n"))
         case .failed(let s): return s
         }
     }
@@ -174,7 +174,11 @@ public enum FileOperations {
         return OperationResult(record: .renamed(from: url, to: target), resultURLs: [target], skipped: [])
     }
     /// "새 폴더", "새 폴더 (2)" ...
-    public static func createFolder(in directory: URL, baseName: String = "새 폴더") throws -> OperationResult {
+    public static func createFolder(in directory: URL) throws -> OperationResult {
+        try createFolder(in: directory, baseName: CL("새 폴더"))
+    }
+
+    public static func createFolder(in directory: URL, baseName: String) throws -> OperationResult {
         try validateName(baseName)
         try requireDirectory(directory)
         let name = availableName(baseName, in: directory, isDirectory: true)
@@ -183,7 +187,11 @@ public enum FileOperations {
         return OperationResult(record: .created(target), resultURLs: [target], skipped: [])
     }
     /// 빈 파일. "새 텍스트 문서.txt", "새 텍스트 문서 (2).txt" ...
-    public static func createFile(in directory: URL, baseName: String = "새 텍스트 문서.txt") throws -> OperationResult {
+    public static func createFile(in directory: URL) throws -> OperationResult {
+        try createFile(in: directory, baseName: CL("새 텍스트 문서.txt"))
+    }
+
+    public static func createFile(in directory: URL, baseName: String) throws -> OperationResult {
         try validateName(baseName)
         try requireDirectory(directory)
         let name = availableName(baseName, in: directory, isDirectory: false)
@@ -198,7 +206,7 @@ public enum FileOperations {
     /// 선택 항목을 ZIP 최상위에 압축한다. 첫 항목의 이름으로 ZIP 이름을 정하며 macOS 메타데이터는 제외한다.
     /// 비 ASCII 엔트리는 로컬/중앙 헤더의 UTF-8 플래그를 모두 설정한다.
     public static func compress(_ urls: [URL], in directory: URL) throws -> OperationResult {
-        guard let first = urls.first else { throw FileOperationError.failed("압축할 항목이 없습니다.") }
+        guard let first = urls.first else { throw FileOperationError.failed(CL("압축할 항목이 없습니다.")) }
         try requireDirectory(directory)
         for url in urls { try requireItem(url) }
         let stem = nameParts(first.lastPathComponent, isDirectory: isDirectoryItem(first)).stem
@@ -300,7 +308,7 @@ public enum FileOperations {
     private static func requireDirectory(_ url: URL) throws {
         try requireItem(url)
         guard try url.resolvingSymlinksInPath().resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
-            throw FileOperationError.failed("폴더가 아닙니다: \(url.path)")
+            throw FileOperationError.failed(CL("폴더가 아닙니다: %@", url.path))
         }
     }
 
@@ -340,7 +348,7 @@ public enum FileOperations {
         process.waitUntilExit()
         guard process.terminationReason == .exit, process.terminationStatus == 0 else {
             let message = String(data: diagnostics, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            throw FileOperationError.failed(message.isEmpty ? "압축 작업에 실패했습니다 (\(process.terminationStatus))." : message)
+            throw FileOperationError.failed(message.isEmpty ? CL("압축 작업에 실패했습니다 (%d).", process.terminationStatus) : message)
         }
     }
 
@@ -375,7 +383,7 @@ public enum FileOperations {
             catch { failures.append("\(pair.to.path): \(error.localizedDescription)") }
         }
         guard failures.isEmpty else {
-            throw FileOperationError.failed("\(original.localizedDescription)\n복구 실패: \(failures.joined(separator: "\n"))")
+            throw FileOperationError.failed(CL("%@\n복구 실패: %@", original.localizedDescription, failures.joined(separator: "\n")))
         }
         throw original
     }
@@ -574,7 +582,7 @@ public enum FileOperations {
                 var target = destination.appendingPathComponent(source.lastPathComponent)
                 if !moving && sameParent {
                     let parts = nameParts(source.lastPathComponent, isDirectory: wholeName)
-                    let name = availableName("\(parts.stem) - 복사본\(parts.suffix)", in: destination, isDirectory: wholeName)
+                    let name = availableName(CL("%@ - 복사본", parts.stem) + parts.suffix, in: destination, isDirectory: wholeName)
                     target = destination.appendingPathComponent(name)
                 }
                 if let completed = try transferItem(source, to: target, moving: moving,
@@ -690,7 +698,7 @@ public enum FileOperations {
             throw error
         }
         guard let target = result as URL? else {
-            throw FileOperationError.failed("휴지통 위치를 확인할 수 없습니다: \(url.path)")
+            throw FileOperationError.failed(CL("휴지통 위치를 확인할 수 없습니다: %@", url.path))
         }
         return target
     }
@@ -706,7 +714,7 @@ public enum FileOperations {
             guard exists(url) else { throw trashError }
             do { return try hiddenBackup(url, excluding: excluding) }
             catch {
-                throw FileOperationError.failed("\(trashError.localizedDescription)\n숨김 백업 실패: \(error.localizedDescription)")
+                throw FileOperationError.failed(CL("%@\n숨김 백업 실패: %@", trashError.localizedDescription, error.localizedDescription))
             }
         }
     }
@@ -716,11 +724,11 @@ public enum FileOperations {
         // Keep backups outside every source/destination tree: merging must not pick them up,
         // and restoring or removing a container must not relocate another record's backup.
         while excluding.contains(where: { contains(parent, in: $0) }) {
-            guard parent.path != "/" else { throw FileOperationError.failed("안전한 백업 폴더가 없습니다: \(url.path)") }
+            guard parent.path != "/" else { throw FileOperationError.failed(CL("안전한 백업 폴더가 없습니다: %@", url.path)) }
             parent.deleteLastPathComponent()
         }
         guard isSameVolume(url, parent) else {
-            throw FileOperationError.failed("같은 볼륨에 백업 폴더가 없습니다: \(url.path)")
+            throw FileOperationError.failed(CL("같은 볼륨에 백업 폴더가 없습니다: %@", url.path))
         }
         let backup = try FileOperationArtifacts.shared.makeBackup(of: url, in: parent)
         return MovePair(from: url, to: backup)
@@ -828,7 +836,7 @@ public enum FileOperations {
             catch { failures.append(error.localizedDescription) }
         }
         guard failures.isEmpty else {
-            throw FileOperationError.failed("\(original.localizedDescription)\n복구 실패: \(failures.joined(separator: "\n"))")
+            throw FileOperationError.failed(CL("%@\n복구 실패: %@", original.localizedDescription, failures.joined(separator: "\n")))
         }
         throw original
     }

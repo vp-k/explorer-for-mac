@@ -101,7 +101,7 @@ final class ProgressJob {
         if parents.count == 1, let first = sources.first {
             sourceFolder = Self.folderName(first.deletingLastPathComponent())
         } else {
-            sourceFolder = "여러 폴더"
+            sourceFolder = L("여러 폴더")
         }
         destinationFolder = destination.map(Self.folderName)
     }
@@ -305,7 +305,7 @@ final class ProgressPanelController: NSWindowController, NSWindowDelegate {
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 140),
                             styleMask: [.titled, .closable, .nonactivatingPanel, .fullSizeContentView],
                             backing: .buffered, defer: true)
-        panel.title = "파일 작업"
+        panel.title = L("파일 작업")
         panel.titlebarAppearsTransparent = true
         panel.isFloatingPanel = false
         panel.hidesOnDeactivate = false
@@ -336,7 +336,7 @@ final class ProgressPanelController: NSWindowController, NSWindowDelegate {
         scroll.autohidesScrollers = true
         scroll.documentView = document
         footer.isHidden = true
-        footer.stringValue = "모든 작업이 끝나면 Explorer 를 종료합니다."
+        footer.stringValue = L("모든 작업이 끝나면 Explorer 를 종료합니다.")
         background.addSubview(scroll)
         background.addSubview(footer)
         let clip = scroll.contentView
@@ -447,7 +447,7 @@ final class ProgressPanelController: NSWindowController, NSWindowDelegate {
     }
 
     private func updateTitle() {
-        let title = rows.count > 1 ? "파일 작업 \(rows.count)개" : "파일 작업"
+        let title = rows.count > 1 ? L("파일 작업 %d개", rows.count) : L("파일 작업")
         if window?.title != title { window?.title = title }
     }
 
@@ -503,7 +503,7 @@ final class ProgressRowView: NSView {
     private let remaining = UI.label("", size: Theme.Font.secondary, color: Theme.secondaryText)
     private let rate = UI.label("", size: Theme.Font.secondary, color: Theme.secondaryText)
     private lazy var cancelButton: ThemedButton = {
-        let button = ThemedButton(symbol: Theme.symbol("xmark", "취소", size: 11), tip: "취소",
+        let button = ThemedButton(symbol: Theme.symbol("xmark", L("취소"), size: 11), tip: L("취소"),
                                   target: self, action: #selector(cancel(_:)))
         button.shape = .circle
         button.fixedSize = NSSize(width: 24, height: 24)
@@ -618,19 +618,8 @@ final class ProgressRowView: NSView {
     /// 작업 상태로 줄을 다시 채운다. 줄 높이가 바뀌면 true.
     @discardableResult
     func refresh() -> Bool {
-        let verb: String
-        switch job.kind {
-        case .copy: verb = "복사"
-        case .move, .trash: verb = "이동"
-        case .duplicate: verb = "복제"
-        }
-        let target: String
-        switch job.kind {
-        case .trash: target = " 휴지통으로"
-        case .duplicate: target = ""
-        case .copy, .move: target = job.destinationFolder.map { " '\($0)'(으)로" } ?? ""
-        }
-        let header = "\(job.itemCount)개 항목을 '\(job.sourceFolder)'에서\(target) \(verb)하는 중"
+        let header = Self.header(kind: job.kind, items: L(count: job.itemCount), source: job.sourceFolder,
+                                 destination: job.destinationFolder)
         if title.stringValue != header {
             title.stringValue = header
             title.toolTip = header
@@ -644,8 +633,8 @@ final class ProgressRowView: NSView {
         let showsBar: Bool, showsDetail: Bool
         if job.isCancelled {
             let started = job.phase == .running
-            percentText = started ? "취소하는 중…" : "취소됨"
-            nameText = started ? "지금까지 한 작업을 되돌리고 있습니다." : "시작하지 않고 건너뜁니다."
+            percentText = started ? L("취소하는 중…") : L("취소됨")
+            nameText = started ? L("지금까지 한 작업을 되돌리고 있습니다.") : L("시작하지 않고 건너뜁니다.")
             (remainingText, rateText) = ("", "")
             bar.fraction = fraction
             bar.isDimmed = true
@@ -654,28 +643,28 @@ final class ProgressRowView: NSView {
             bar.isDimmed = false
             switch job.phase {
             case .waiting, .preparing:
-                percentText = job.phase == .waiting ? "대기 중" : "준비 중"
-                nameText = job.phase == .waiting ? "앞 작업이 끝나면 시작합니다." : "충돌 항목을 확인하고 있습니다."
+                percentText = job.phase == .waiting ? L("대기 중") : L("준비 중")
+                nameText = job.phase == .waiting ? L("앞 작업이 끝나면 시작합니다.") : L("충돌 항목을 확인하고 있습니다.")
                 (remainingText, rateText) = ("", "")
                 bar.fraction = 0
                 (showsBar, showsDetail) = (false, false)
             case .running:
                 if let snapshot {
-                    percentText = "\(Int((fraction * 100).rounded(.down)))% 완료"
+                    percentText = L("%d%% 완료", Int((fraction * 100).rounded(.down)))
                     bar.fraction = fraction
-                    nameText = snapshot.currentName.isEmpty ? " " : "이름: \(snapshot.currentName)"
+                    nameText = snapshot.currentName.isEmpty ? " " : L("이름: %@", snapshot.currentName)
                     let items = max(0, snapshot.totalItems - snapshot.completedItems)
                     let bytes = max(0, snapshot.totalBytes - snapshot.completedBytes)
-                    remainingText = "남은 항목: \(items)개 (\(Self.size(bytes)))"
+                    remainingText = L("남은 항목: %1$d개 (%2$@)", items, Self.size(bytes))
                     if let speed = job.bytesPerSecond, speed > 0 {
-                        rateText = "\(Self.size(Int64(speed)))/초 · \(Self.duration(Double(bytes) / speed))"
+                        rateText = L("%1$@/초 · %2$@", Self.size(Int64(speed)), Self.duration(Double(bytes) / speed))
                     } else {
-                        rateText = "남은 시간 계산 중…"
+                        rateText = L("남은 시간 계산 중…")
                     }
                     (showsBar, showsDetail) = (true, true)
                 } else {
-                    percentText = "0% 완료"
-                    nameText = "항목 수를 세는 중…"
+                    percentText = L("%d%% 완료", 0)
+                    nameText = L("항목 수를 세는 중…")
                     (remainingText, rateText) = ("", "")
                     bar.fraction = 0
                     (showsBar, showsDetail) = (true, false)
@@ -691,6 +680,20 @@ final class ProgressRowView: NSView {
         return setLayout(bar: showsBar, detail: showsDetail)
     }
 
+    /// 줄 제목. 영어는 어순이 달라 작업 종류마다 문장 전체를 키로 둔다.
+    static func header(kind: ProgressJob.Kind, items: String, source: String, destination: String?) -> String {
+        switch kind {
+        case .trash: return L("%1$@을 '%2$@'에서 휴지통으로 이동하는 중", items, source)
+        case .duplicate: return L("%1$@을 '%2$@'에서 복제하는 중", items, source)
+        case .copy:
+            guard let destination else { return L("%1$@을 '%2$@'에서 복사하는 중", items, source) }
+            return L("%1$@을 '%2$@'에서 '%3$@'(으)로 복사하는 중", items, source, destination)
+        case .move:
+            guard let destination else { return L("%1$@을 '%2$@'에서 이동하는 중", items, source) }
+            return L("%1$@을 '%2$@'에서 '%3$@'(으)로 이동하는 중", items, source, destination)
+        }
+    }
+
     private static let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
@@ -700,12 +703,15 @@ final class ProgressRowView: NSView {
     static func size(_ bytes: Int64) -> String { byteFormatter.string(fromByteCount: bytes) }
 
     static func duration(_ seconds: Double) -> String {
-        guard seconds.isFinite else { return "남은 시간 계산 중…" }
+        guard seconds.isFinite else { return L("남은 시간 계산 중…") }
         let s = Int(seconds.rounded(.up))
-        if s < 2 { return "곧 끝남" }
-        if s < 60 { return "약 \(s)초 남음" }
-        if s < 3600 { return "약 \((s + 30) / 60)분 남음" }
-        return "약 \(s / 3600)시간 \((s % 3600) / 60)분 남음"
+        if s < 2 { return L("곧 끝남") }
+        if s < 60 { return L("약 %d초 남음", s) }
+        if s < 3600 {
+            let minutes = (s + 30) / 60
+            return minutes == 1 ? L("약 1분 남음") : L("약 %d분 남음", minutes)
+        }
+        return L("약 %1$d시간 %2$d분 남음", s / 3600, (s % 3600) / 60)
     }
 }
 

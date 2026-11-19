@@ -31,9 +31,9 @@ final class AppState {
 
         var title: String {
             switch self {
-            case .system: return "시스템"
-            case .light: return "라이트"
-            case .dark: return "다크"
+            case .system: return L("시스템")
+            case .light: return L("라이트")
+            case .dark: return L("다크")
             }
         }
     }

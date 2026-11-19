@@ -16,8 +16,8 @@ final class PropertiesWindowController: NSWindowController, NSWindowDelegate {
 
     private let urls: [URL]
     private let token = CancelToken()
-    private let sizeValue = UI.label("계산 중…")
-    private let containsValue = UI.label("계산 중…")
+    private let sizeValue = UI.label(L("계산 중…"))
+    private let containsValue = UI.label(L("계산 중…"))
 
     private init(urls: [URL]) {
         self.urls = urls
@@ -37,8 +37,8 @@ final class PropertiesWindowController: NSWindowController, NSWindowDelegate {
     private func build(in panel: NSPanel) {
         let items = urls.compactMap { try? FileItem.load($0) }
         let single = urls.count == 1 ? items.first : nil
-        let title = single?.name ?? "\(urls.count)개 항목"
-        panel.title = "\(title) 속성"
+        let title = single?.name ?? L(count: urls.count)
+        panel.title = L("%@ 속성", title)
 
         let icon = NSImageView(image: IconCache.shared.icon(for: urls[0]))
         icon.translatesAutoresizingMaskIntoConstraints = false
@@ -51,21 +51,21 @@ final class PropertiesWindowController: NSWindowController, NSWindowDelegate {
 
         var rows: [[NSView]] = [[icon, nameField]]
         let kinds = Set(items.map(\.typeDescription))
-        rows.append([caption("종류:"), value(kinds.count == 1 ? kinds.first! : "여러 종류")])
+        rows.append([caption(L("종류:")), value(kinds.count == 1 ? kinds.first! : L("여러 종류"))])
         let parents = Set(urls.map { $0.deletingLastPathComponent().path })
-        rows.append([caption("위치:"), value(parents.count == 1 ? parents.first! : "여러 위치", selectable: true)])
-        rows.append([caption("크기:"), sizeValue])
+        rows.append([caption(L("위치:")), value(parents.count == 1 ? parents.first! : L("여러 위치"), selectable: true)])
+        rows.append([caption(L("크기:")), sizeValue])
         if items.contains(where: \.isNavigable) || urls.count > 1 {
-            rows.append([caption("내용:"), containsValue])
+            rows.append([caption(L("내용:")), containsValue])
         }
         if let single {
-            rows.append([caption("만든 날짜:"), value(single.dateCreated.map { Formats.longDate.string(from: $0) } ?? "")])
-            rows.append([caption("수정한 날짜:"), value(single.dateModified.map { Formats.longDate.string(from: $0) } ?? "")])
+            rows.append([caption(L("만든 날짜:")), value(single.dateCreated.map { Formats.longDate.string(from: $0) } ?? "")])
+            rows.append([caption(L("수정한 날짜:")), value(single.dateModified.map { Formats.longDate.string(from: $0) } ?? "")])
             var attributes: [String] = []
-            if single.isHidden { attributes.append("숨김") }
-            if single.isSymlink { attributes.append("바로 가기(심볼릭 링크)") }
-            if !FileManager.default.isWritableFile(atPath: single.url.path) { attributes.append("읽기 전용") }
-            if !attributes.isEmpty { rows.append([caption("특성:"), value(attributes.joined(separator: ", "))]) }
+            if single.isHidden { attributes.append(L("숨김")) }
+            if single.isSymlink { attributes.append(L("바로 가기(심볼릭 링크)")) }
+            if !FileManager.default.isWritableFile(atPath: single.url.path) { attributes.append(L("읽기 전용")) }
+            if !attributes.isEmpty { rows.append([caption(L("특성:")), value(attributes.joined(separator: ", "))]) }
         }
 
         let grid = NSGridView(views: rows)
@@ -77,7 +77,7 @@ final class PropertiesWindowController: NSWindowController, NSWindowDelegate {
         grid.row(at: 0).bottomPadding = 8
         grid.translatesAutoresizingMaskIntoConstraints = false
 
-        let ok = NSButton(title: "확인", target: self, action: #selector(closeWindow(_:)))
+        let ok = NSButton(title: L("확인"), target: self, action: #selector(closeWindow(_:)))
         ok.keyEquivalent = "\r"
         ok.translatesAutoresizingMaskIntoConstraints = false
 
@@ -116,8 +116,8 @@ final class PropertiesWindowController: NSWindowController, NSWindowDelegate {
                 FolderSizeCalculator.stats(for: urls, isCancelled: { token.isCancelled })
             }.value
             guard let self, !token.isCancelled else { return }
-            self.sizeValue.stringValue = "\(SizeFormatter.humanSize(stats.totalBytes)) (\(Formats.bytes(stats.totalBytes)) 바이트)"
-            self.containsValue.stringValue = "파일 \(Formats.bytes(Int64(stats.fileCount)))개, 폴더 \(Formats.bytes(Int64(stats.folderCount)))개"
+            self.sizeValue.stringValue = L("%1$@ (%2$@ 바이트)", SizeFormatter.humanSize(stats.totalBytes), Formats.bytes(stats.totalBytes))
+            self.containsValue.stringValue = L("파일 %1$@개, 폴더 %2$@개", Formats.bytes(Int64(stats.fileCount)), Formats.bytes(Int64(stats.folderCount)))
         }
     }
 

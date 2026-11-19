@@ -70,8 +70,8 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
     private let scroll = NSScrollView()
     private let background = MicaView()
     private var roots: [NavNode] = []
-    private var quickAccess = NavNode(.header, title: "빠른 액세스", url: nil, children: [])
-    private var thisMac = NavNode(.thisMac, title: "내 Mac", url: Location.thisMac, children: [])
+    private var quickAccess = NavNode(.header, title: L("빠른 액세스"), url: nil, children: [])
+    private var thisMac = NavNode(.thisMac, title: L("내 Mac"), url: Location.thisMac, children: [])
     private var suppressSelection = false
     /// 마지막으로 select(url:) 로 고른 위치. 트리를 다시 그린 뒤 선택을 되살릴 때 쓴다.
     private var selectedURL: URL?
@@ -93,7 +93,7 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
         outline.delegate = self
         outline.pane = self
         outline.registerForDraggedTypes([.fileURL])
-        outline.setAccessibilityLabel("탐색 창")
+        outline.setAccessibilityLabel(L("탐색 창"))
         scroll.documentView = outline
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -111,8 +111,8 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
     func reloadAll() {
         quickAccess.children = pinnedNodes()
         thisMac.children = volumeNodes()
-        var nodes = [NavNode(.home, title: "홈", url: Location.home), quickAccess, thisMac]
-        if let trash = Location.trash { nodes.append(NavNode(.trash, title: "휴지통", url: trash)) }
+        var nodes = [NavNode(.home, title: L("홈"), url: Location.home), quickAccess, thisMac]
+        if let trash = Location.trash { nodes.append(NavNode(.trash, title: L("휴지통"), url: trash)) }
         roots = nodes
         outline.reloadData()
         outline.expandItem(quickAccess)
@@ -257,7 +257,7 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
         var trailing = cell.trailingAnchor
         if node.kind == .pinned {
             // 빠른 액세스 고정 표시. 흐리게, 마우스를 올린 행에서만 보인다 (DESIGN 4·6장).
-            let pin = NSImageView(image: Theme.symbol("pin.fill", "고정됨", size: 10))
+            let pin = NSImageView(image: Theme.symbol("pin.fill", L("고정됨"), size: 10))
             pin.translatesAutoresizingMaskIntoConstraints = false
             pin.contentTintColor = Theme.secondaryText.withAlphaComponent(0.6)
             pin.identifier = Self.pinIdentifier
@@ -308,10 +308,10 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
     private func icon(for node: NavNode) -> NSImage {
         switch node.kind {
         // 폴더는 노랑, 그 밖의 기호는 accent 한 색으로 맞춘다 (DESIGN 6장).
-        case .home: return tinted("house.fill", "홈", Theme.accent)
-        case .header: return tinted("star.fill", "빠른 액세스", Theme.accent)
+        case .home: return tinted("house.fill", L("홈"), Theme.accent)
+        case .header: return tinted("star.fill", L("빠른 액세스"), Theme.accent)
         case .thisMac: return ThisMacView.computerIcon
-        case .trash: return tinted("trash.fill", "휴지통", Theme.accent)
+        case .trash: return tinted("trash.fill", L("휴지통"), Theme.accent)
         default: return node.url.map { IconCache.shared.icon(for: $0) } ?? FolderIcon.image()
         }
     }
@@ -380,14 +380,14 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
         guard row >= 0, let node = outline.item(atRow: row) as? NavNode, let url = node.url,
               !Location.isThisMac(url) else { return nil }
         let menu = NSMenu()
-        addItem(menu, "열기", #selector(openItem(_:)), url)
-        addItem(menu, "새 탭에서 열기", #selector(openItemInNewTab(_:)), url)
+        addItem(menu, L("열기"), #selector(openItem(_:)), url)
+        addItem(menu, L("새 탭에서 열기"), #selector(openItemInNewTab(_:)), url)
         if node.kind != .trash {
             menu.addItem(.separator())
             let pinned = AppState.shared.pins.isPinned(url)
-            addItem(menu, pinned ? "빠른 액세스에서 고정 해제" : "빠른 액세스에 고정", #selector(togglePin(_:)), url)
+            addItem(menu, pinned ? L("빠른 액세스에서 고정 해제") : L("빠른 액세스에 고정"), #selector(togglePin(_:)), url)
             menu.addItem(.separator())
-            addItem(menu, "속성", #selector(showProperties(_:)), url)
+            addItem(menu, L("속성"), #selector(showProperties(_:)), url)
         }
         return menu
     }
@@ -556,6 +556,6 @@ final class CapacityBar: NSView {
     }
 
     static func caption(for volume: VolumeInfo) -> String {
-        "\(SizeFormatter.humanSize(volume.totalBytes)) 중 \(SizeFormatter.humanSize(volume.availableBytes)) 사용 가능"
+        L("%1$@ 중 %2$@ 사용 가능", SizeFormatter.humanSize(volume.totalBytes), SizeFormatter.humanSize(volume.availableBytes))
     }
 }

@@ -89,7 +89,7 @@ public enum AddressResolver {
         var remaining: ArraySlice<String>
         if path.starts(with: homeParts) {
             root = home
-            result = [Breadcrumb(title: "홈", url: root)]
+            result = [Breadcrumb(title: CL("홈"), url: root)]
             remaining = path.dropFirst(homeParts.count)
         } else if path.count >= 3 && path[1] == "Volumes" {
             root = URL(fileURLWithPath: "/Volumes").appendingPathComponent(path[2], isDirectory: true)

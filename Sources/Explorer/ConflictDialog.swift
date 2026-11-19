@@ -227,19 +227,19 @@ enum ConflictDialog {
         alert.alertStyle = .warning
         let relative = target.path.hasPrefix(destination.path + "/")
             ? String(target.path.dropFirst(destination.path.count + 1)) : target.lastPathComponent
-        alert.messageText = "대상 폴더에 '\(relative)'이(가) 이미 있습니다."
-        let verb = move ? "이동" : "복사"
-        var lines = ["'\(destination.lastPathComponent)'(으)로 \(verb)하는 중입니다. 어떻게 할까요?"]
-        if source != target { lines.append("원본: \(source.path)") }
+        alert.messageText = L("대상 폴더에 '%@'이(가) 이미 있습니다.", relative)
+        var lines = [move ? L("'%@'(으)로 이동하는 중입니다. 어떻게 할까요?", destination.lastPathComponent)
+                          : L("'%@'(으)로 복사하는 중입니다. 어떻게 할까요?", destination.lastPathComponent)]
+        if source != target { lines.append(L("원본: %@", source.path)) }
         alert.informativeText = lines.joined(separator: "\n\n")
-        alert.addButton(withTitle: "덮어쓰기")
-        alert.addButton(withTitle: "건너뛰기")
-        alert.addButton(withTitle: "둘 다 유지")
-        alert.addButton(withTitle: inProgress ? "나머지 건너뛰기" : "취소")
+        alert.addButton(withTitle: L("덮어쓰기"))
+        alert.addButton(withTitle: L("건너뛰기"))
+        alert.addButton(withTitle: L("둘 다 유지"))
+        alert.addButton(withTitle: inProgress ? L("나머지 건너뛰기") : L("취소"))
         alert.buttons[3].keyEquivalent = "\u{1b}"
         if remaining > 1 {
             alert.showsSuppressionButton = true
-            alert.suppressionButton?.title = "남은 충돌 \(remaining)개 모두에 적용"
+            alert.suppressionButton?.title = L("남은 충돌 %d개 모두에 적용", remaining)
             alert.suppressionButton?.state = .off
         }
 

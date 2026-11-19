@@ -78,10 +78,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if quitWhenIdle { return .terminateCancel }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "파일 작업이 진행 중입니다."
-        alert.informativeText = "지금 종료하면 작업이 중간에 끊깁니다. 작업이 끝난 뒤 종료할까요?"
-        alert.addButton(withTitle: "끝난 뒤 종료")
-        alert.addButton(withTitle: "취소")
+        alert.messageText = L("파일 작업이 진행 중입니다.")
+        alert.informativeText = L("지금 종료하면 작업이 중간에 끊깁니다. 작업이 끝난 뒤 종료할까요?")
+        alert.addButton(withTitle: L("끝난 뒤 종료"))
+        alert.addButton(withTitle: L("취소"))
         alert.buttons[1].keyEquivalent = "\u{1b}"
         // 큐가 질문 사이에 비었으면 바로 종료한다.
         guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }

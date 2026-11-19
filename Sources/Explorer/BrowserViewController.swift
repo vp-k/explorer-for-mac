@@ -7,10 +7,10 @@ enum ViewMode: Int, CaseIterable {
 
     var title: String {
         switch self {
-        case .details: return "자세히"
-        case .list: return "목록"
-        case .mediumIcons: return "보통 아이콘"
-        case .largeIcons: return "큰 아이콘"
+        case .details: return L("자세히")
+        case .list: return L("목록")
+        case .mediumIcons: return L("보통 아이콘")
+        case .largeIcons: return L("큰 아이콘")
         }
     }
 }
@@ -42,10 +42,10 @@ final class BrowserViewController: NSViewController {
     private var didLayoutSplit = false
 
     // 화면 요소
-    private lazy var backButton = UI.circleButton("arrow.left", tip: "뒤로 (⌘[)", target: self, action: #selector(goBack(_:)))
-    private lazy var forwardButton = UI.circleButton("arrow.right", tip: "앞으로 (⌘])", target: self, action: #selector(goForward(_:)))
-    private lazy var upButton = UI.circleButton("arrow.up", tip: "상위 폴더 (⌥↑)", target: self, action: #selector(goUp(_:)))
-    private lazy var refreshButton = UI.circleButton("arrow.clockwise", tip: "새로 고침 (F5)", target: self, action: #selector(refresh(_:)))
+    private lazy var backButton = UI.circleButton("arrow.left", tip: L("뒤로 (⌘[)"), target: self, action: #selector(goBack(_:)))
+    private lazy var forwardButton = UI.circleButton("arrow.right", tip: L("앞으로 (⌘])"), target: self, action: #selector(goForward(_:)))
+    private lazy var upButton = UI.circleButton("arrow.up", tip: L("상위 폴더 (⌥↑)"), target: self, action: #selector(goUp(_:)))
+    private lazy var refreshButton = UI.circleButton("arrow.clockwise", tip: L("새로 고침 (F5)"), target: self, action: #selector(refresh(_:)))
     let addressBar = AddressBar()
     let searchField = ThemedSearchField()
     private lazy var searchBox = SearchBox(field: searchField)
@@ -87,11 +87,11 @@ final class BrowserViewController: NSViewController {
         let navButtons = NSStackView(views: [backButton, forwardButton, upButton, refreshButton])
         navButtons.spacing = Theme.Space.xs
 
-        searchField.placeholderString = "검색"
+        searchField.placeholderString = L("검색")
         searchField.sendsSearchStringImmediately = false
         searchField.target = self
         searchField.action = #selector(searchFieldChanged(_:))
-        searchField.setAccessibilityLabel("검색 상자")
+        searchField.setAccessibilityLabel(L("검색 상자"))
 
         // 주소 줄: ← → ↑ ⟳ 원형 버튼, 둥근 주소 상자, 오른쪽 둥근 검색 상자 (DESIGN 1장).
         let top = FillView(Theme.toolbarBackground)
@@ -284,7 +284,7 @@ final class BrowserViewController: NSViewController {
     private func submitAddress(_ text: String) {
         let input = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { fileList.focus(); return }
-        if ["내 Mac", "내 PC", "내 컴퓨터", "This PC", "this pc"].contains(input) {
+        if ["내 mac", "내 pc", "내 컴퓨터", "this pc", "this mac"].contains(input.lowercased()) {
             navigate(to: Location.thisMac)
             fileList.focus()
             return
@@ -292,8 +292,8 @@ final class BrowserViewController: NSViewController {
         let base = isThisMac ? Location.home : currentURL
         guard let url = AddressResolver.resolve(input, relativeTo: base) else {
             let alert = NSAlert()
-            alert.messageText = "'\(input)'을(를) 찾을 수 없습니다."
-            alert.informativeText = "철자를 확인하고 다시 시도하세요."
+            alert.messageText = L("'%@'을(를) 찾을 수 없습니다.", input)
+            alert.informativeText = L("철자를 확인하고 다시 시도하세요.")
             alert.alertStyle = .warning
             if let window = view.window {
                 alert.beginSheetModal(for: window) { [weak self] _ in
@@ -353,7 +353,7 @@ final class BrowserViewController: NSViewController {
             rawItems = []
             fileList.setItems([], selecting: [])
             fileList.showMessage(nil)
-            statusBar.setActivity("불러오는 중…")
+            statusBar.setActivity(L("불러오는 중…"))
             updateStatus()
             updateCommandState()
         }
@@ -374,7 +374,7 @@ final class BrowserViewController: NSViewController {
             case .success(let items):
                 self.rawItems = items
                 self.applyItems(selecting: selecting)
-                self.fileList.showMessage(items.isEmpty ? "이 폴더는 비어 있습니다." : nil)
+                self.fileList.showMessage(items.isEmpty ? L("이 폴더는 비어 있습니다.") : nil)
                 if let rename { self.fileList.beginRename(rename) }
             case .failure(let error):
                 self.rawItems = []
@@ -425,7 +425,7 @@ final class BrowserViewController: NSViewController {
         fileList.showsFolderColumn = true
         applyItems(selecting: [])
         fileList.showMessage(nil)
-        statusBar.setActivity("검색 중…")
+        statusBar.setActivity(L("검색 중…"))
         updateChrome()
 
         let finder = FileSearch(root: currentURL, query: query, showHidden: state.showHidden)
@@ -448,7 +448,7 @@ final class BrowserViewController: NSViewController {
     private func appendSearchResults(_ batch: [FileItem], generation: Int) {
         guard generation == loadGeneration, isSearching else { return }
         pendingResults.append(contentsOf: batch)
-        statusBar.setActivity("검색 중… \(rawItems.count + pendingResults.count)개 찾음")
+        statusBar.setActivity(L("검색 중… %d개 찾음", rawItems.count + pendingResults.count))
         guard searchFlushGeneration != generation else { return }
         searchFlushGeneration = generation
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -508,7 +508,7 @@ final class BrowserViewController: NSViewController {
 
     private func finishSearchDisplay() {
         statusBar.setActivity(nil)
-        fileList.showMessage(rawItems.isEmpty ? "검색 조건과 일치하는 항목이 없습니다." : nil)
+        fileList.showMessage(rawItems.isEmpty ? L("검색 조건과 일치하는 항목이 없습니다.") : nil)
     }
 
     /// 검색을 끝내고 폴더 목록으로 돌아간다.
@@ -539,11 +539,11 @@ final class BrowserViewController: NSViewController {
 
         let title: String
         if isThisMac {
-            title = "내 Mac"
+            title = L("내 Mac")
             tabIcon = ThisMacView.computerIcon
-            tabToolTip = "내 Mac"
-            addressBar.setLocation(crumbs: [Breadcrumb(title: "내 Mac", url: Location.thisMac)],
-                                   path: "내 Mac", icon: tabIcon)
+            tabToolTip = L("내 Mac")
+            addressBar.setLocation(crumbs: [Breadcrumb(title: L("내 Mac"), url: Location.thisMac)],
+                                   path: L("내 Mac"), icon: tabIcon)
         } else {
             let crumbs = AddressResolver.breadcrumbs(for: currentURL)
             title = crumbs.last?.title ?? currentURL.lastPathComponent
@@ -551,8 +551,8 @@ final class BrowserViewController: NSViewController {
             tabToolTip = AddressResolver.displayPath(for: currentURL)
             addressBar.setLocation(crumbs: crumbs, path: AddressResolver.displayPath(for: currentURL), icon: tabIcon)
         }
-        searchField.placeholderString = isThisMac ? "검색" : "\(title) 검색"
-        windowTitle = isSearching ? "검색 결과 - \(title)" : title
+        searchField.placeholderString = isThisMac ? L("검색") : L("%@ 검색", title)
+        windowTitle = isSearching ? L("검색 결과 - %@", title) : title
         tabTitle = windowTitle
         navPane.select(url: currentURL)
         updateCommandState()

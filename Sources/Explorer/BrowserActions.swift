@@ -56,8 +56,8 @@ extension BrowserViewController {
         let panel = NSOpenPanel()
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         panel.allowedContentTypes = [.application]
-        panel.prompt = "열기"
-        panel.message = "이 파일을 열 앱을 선택하세요."
+        panel.prompt = L("열기")
+        panel.message = L("이 파일을 열 앱을 선택하세요.")
         panel.beginSheetModal(for: window) { response in
             guard response == .OK, let app = panel.url else { return }
             NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
@@ -218,11 +218,11 @@ extension BrowserViewController {
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = urls.count == 1
-            ? "'\(urls[0].lastPathComponent)'을(를) 영구적으로 삭제하시겠습니까?"
-            : "이 \(urls.count)개 항목을 영구적으로 삭제하시겠습니까?"
-        alert.informativeText = "이 작업은 실행 취소할 수 없습니다."
-        alert.addButton(withTitle: "삭제")
-        alert.addButton(withTitle: "취소")
+            ? L("'%@'을(를) 영구적으로 삭제하시겠습니까?", urls[0].lastPathComponent)
+            : L("이 %d개 항목을 영구적으로 삭제하시겠습니까?", urls.count)
+        alert.informativeText = L("이 작업은 실행 취소할 수 없습니다.")
+        alert.addButton(withTitle: L("삭제"))
+        alert.addButton(withTitle: L("취소"))
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
             Task { @MainActor [weak self] in
@@ -442,20 +442,23 @@ extension BrowserViewController {
         switch error as? FileOperationError {
         case .partialDeletion(let deleted, let failed, let reason)?:
             alert.alertStyle = .critical
-            alert.messageText = "일부 항목만 영구 삭제되었습니다."
+            alert.messageText = L("일부 항목만 영구 삭제되었습니다.")
             let shown = deleted.prefix(10).map { "  \($0.path)" }
-            let more = deleted.count > shown.count ? ["  외 \(deleted.count - shown.count)개"] : []
-            alert.informativeText = (["'\(failed.lastPathComponent)'을(를) 삭제하지 못해 작업을 멈췄습니다.",
-                                      "이유: \(reason)", "", "이미 삭제되어 되돌릴 수 없는 항목 \(deleted.count)개:"]
+            let more = deleted.count > shown.count ? [L("  외 %d개", deleted.count - shown.count)] : []
+            alert.informativeText = ([L("'%@'을(를) 삭제하지 못해 작업을 멈췄습니다.", failed.lastPathComponent),
+                                      L("이유: %@", reason), "",
+                                      deleted.count == 1 ? L("이미 삭제되어 되돌릴 수 없는 항목 1개:")
+                                          : L("이미 삭제되어 되돌릴 수 없는 항목 %d개:", deleted.count)]
                                      + shown + more).joined(separator: "\n")
         case .destinationContainsSource(let path)?:
-            alert.messageText = "대상의 같은 이름 항목이 옮기려는 원본을 포함하고 있습니다."
-            alert.informativeText = "'\(URL(fileURLWithPath: path).lastPathComponent)'을(를) 덮어쓰거나 병합하면 원본도 사라지므로 작업을 멈췄습니다. 아무것도 바뀌지 않았습니다.\n\n대상: \(path)"
+            alert.messageText = L("대상의 같은 이름 항목이 옮기려는 원본을 포함하고 있습니다.")
+            alert.informativeText = L("'%1$@'을(를) 덮어쓰거나 병합하면 원본도 사라지므로 작업을 멈췄습니다. 아무것도 바뀌지 않았습니다.\n\n대상: %2$@",
+                                     URL(fileURLWithPath: path).lastPathComponent, path)
         case .destinationInsideSource(let path)?:
-            alert.messageText = "폴더를 자기 자신이나 그 하위 폴더로 옮기거나 복사할 수 없습니다."
-            alert.informativeText = "아무것도 바뀌지 않았습니다.\n\n대상: \(path)"
+            alert.messageText = L("폴더를 자기 자신이나 그 하위 폴더로 옮기거나 복사할 수 없습니다.")
+            alert.informativeText = L("아무것도 바뀌지 않았습니다.\n\n대상: %@", path)
         default:
-            alert.messageText = "작업을 완료할 수 없습니다."
+            alert.messageText = L("작업을 완료할 수 없습니다.")
             alert.informativeText = error.localizedDescription
         }
         if let window = ConflictDialog.hostWindow(preferring: view.window) {

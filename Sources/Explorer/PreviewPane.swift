@@ -6,7 +6,7 @@ import Quartz
 @MainActor
 final class PreviewPane: FillView {
     private let previewView: QLPreviewView = QLPreviewView(frame: .zero, style: .normal)
-    private let placeholder = UI.label("미리 볼 파일을 선택하세요.", color: Theme.secondaryText)
+    private let placeholder = UI.label(L("미리 볼 파일을 선택하세요."), color: Theme.secondaryText)
     private var currentURL: URL?
 
     init() {
@@ -31,7 +31,7 @@ final class PreviewPane: FillView {
             previewView.previewItem = nil
             previewView.isHidden = true
             placeholder.isHidden = false
-            placeholder.stringValue = item == nil ? "미리 볼 파일을 선택하세요." : "폴더는 미리 볼 수 없습니다."
+            placeholder.stringValue = item == nil ? L("미리 볼 파일을 선택하세요.") : L("폴더는 미리 볼 수 없습니다.")
             return
         }
         guard currentURL != item.url else { return }

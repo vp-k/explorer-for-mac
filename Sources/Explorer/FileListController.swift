@@ -87,13 +87,13 @@ final class FileListController: NSObject {
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(tableDoubleClicked(_:))
-        tableView.setAccessibilityLabel("파일 목록")
+        tableView.setAccessibilityLabel(L("파일 목록"))
 
-        addColumn(Column.name, "이름", width: 320, sortKey: .name)
-        addColumn(Column.date, "수정한 날짜", width: 160, sortKey: .dateModified)
-        addColumn(Column.type, "유형", width: 150, sortKey: .type)
-        addColumn(Column.size, "크기", width: 100, sortKey: .size)
-        addColumn(Column.folder, "폴더", width: 300, sortKey: nil)
+        addColumn(Column.name, L("이름"), width: 320, sortKey: .name)
+        addColumn(Column.date, L("수정한 날짜"), width: 160, sortKey: .dateModified)
+        addColumn(Column.type, L("유형"), width: 150, sortKey: .type)
+        addColumn(Column.size, L("크기"), width: 100, sortKey: .size)
+        addColumn(Column.folder, L("폴더"), width: 300, sortKey: nil)
         tableView.tableColumns.last?.isHidden = true
         tableView.autosaveName = "ExplorerDetailsColumns"
         tableView.autosaveTableColumns = true
@@ -165,7 +165,7 @@ final class FileListController: NSObject {
         collectionView.registerForDraggedTypes([.fileURL])
         collectionView.setDraggingSourceOperationMask(.every, forLocal: true)
         collectionView.setDraggingSourceOperationMask([.copy, .move, .generic, .link], forLocal: false)
-        collectionView.setAccessibilityLabel("파일 목록")
+        collectionView.setAccessibilityLabel(L("파일 목록"))
 
         collectionScroll.documentView = collectionView
         collectionScroll.hasVerticalScroller = true
