@@ -24,7 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppState.shared.operations.onIdle = { [weak self] in self?.operationsDidFinish() }
         if controllers.isEmpty { openWindow(at: Self.startFolder() ?? Location.home) }
         NSApp.activate()
+        #if DEBUG
         DebugSnapshot.runIfRequested()
+        #endif
     }
 
     /// `open Explorer.app --args <폴더>` 또는 실행 파일 인자로 받은 시작 폴더. 없거나 폴더가 아니면 nil.

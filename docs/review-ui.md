@@ -170,3 +170,53 @@
 - 회귀 하네스는 실패 0. 보조 smoke에서 실제 디스크 재귀 검색·폴더 열기·뒤로/앞으로·이름 변경 확정/취소·같은 폴더 붙여넣기·전용 대지 경로 복사·삭제 취소·휴지통 Undo도 확인했다. `smoke.png`는 기존 방식의 AppKit 뷰 캡처이며 실제 화면/물리 키 검증으로 취급하지 않았다.
 - 모든 로그의 기준 디렉터리는 `/tmp/explorer-final/logs/`다. `check-evidence.py`로 판정에 사용한 상태·완료 로그·내용 검증·테스트 성공을 다시 대조했다. 재현 입력·하네스·실행 스크립트도 `/tmp/explorer-final/`에 보관했다.
 - **최종 결론: R1의 High를 포함한 재검증 지적은 닫혔고 새 Critical/High가 없어 DoD 4번 통과.** 실제 한국어 IME·물리 마우스·Finder 양방향 대지·외부 앱 드래그·서로 다른 실물/네트워크 볼륨과 강제 종료 내구성은 이번 하네스 검증에 포함하지 않았다. DoD 2·3·5 전체의 실기 통과를 추가로 선언하는 결과는 아니다.
+
+## 리디자인 회귀 리뷰 (5bd4191)
+
+**결론: Critical 0건, High 1건, Medium 2건, Low 1건. 기존 H1~H3·M1~M8 및 R1·R2는 회귀하지 않았으나, 충돌 시트가 열린 창을 병합하면 시트가 숨겨진 채 앱 공유 파일 작업 큐가 고착되는 새 High를 재현했다. 이 커밋은 SPEC DoD 4번을 통과하지 못한다.**
+
+- 기준: `5bd41916b8c535ed5bc67ab068a1c58c64ef32a6`. `git archive 5bd4191`을 `/tmp/explorer-redesign-review/head.tar`에 보관하고 `baseline/`에 추출했다. 검토 중 다른 작업의 `AppDelegate.swift`, `DebugSnapshot.swift` 수정이 나타났으나 읽기 전용 기준본과 빌드에는 섞지 않았고 건드리지 않았다. 아래 줄 번호는 모두 이 커밋 기준이다.
+- macOS 26.4 arm64, Swift 6.2.4, SDK 26.2. 격리 Debug·Release 빌드 모두 성공. 같은 사본의 `swift test`는 **145개 실행, 실패 0**. 원본 저장소에는 이 절만 추가했으며 소스 수정·git commit은 하지 않았다.
+- 기존 `/tmp/explorer-final/`, `/tmp/explorer-verify-ui/` 하네스를 현재 UI 및 동일 기준본 Core 오브젝트로 다시 컴파일했다. 이전 `controller.browser`/직접 content controller 조회만 `tabs.selectedBrowser`/`window.activeBrowser`로 바꿨다. 시험 진입점·접근 제한 완화·검색 정렬 완료 관측·메뉴 캡처는 격리 사본에만 적용했다. 대지·설정 suite·창/분할 autosave·앱 지원·시험 입력과 결과는 전용 이름 또는 `/tmp/explorer-redesign-review/` 아래다. 상세: `instrumentation.md`, `prepare.py`, `build-harness.sh`.
+- 로그 경로는 아래에서 모두 `/tmp/explorer-redesign-review/logs/` 기준이다. `check-evidence.py`로 회귀 상태, 파일 수·내용, 큐 완료, 새 High의 반복 재현을 대조했다. 하네스 종료 코드 0만을 결함 없음으로 해석하지 않았다.
+
+### 회귀 판정 표
+
+| ID / 범위 | 판정 | 실행 결과 / 근거 |
+|---|---|---|
+| R1 | 기존 보호 유지 | `performTransfer`·`runOperation` 각각 마지막 창 닫기/종료 후 대기/종료 취소 6개 모두 원본 0·대상 2,000개·내용 일치·후속 파일 생성. **자체 탭의 마지막 탭 닫기**도 두 진입점에서 같은 결과 후 정상 종료. `term-*.log`, `lasttab-*.log`, `termination-summary.json`, `lasttab-summary.json`. 아래 RD-H1에서는 질문이 고립되어 idle에 도달하지 못하므로 별도 실패다. |
+| R1 추가 수명 | 통과 | 종료 6회 요청에도 경고·idle·실제 종료 각 1회. 취소 후 재요청, 마지막 창 닫고 재열기, 창 없는 상태/종료 대기 중 충돌 응답도 완료. `lifecycle-*.log`, `lifecycle-summary.json` 5개 모두 자체 단언 실패 0. |
+| R2 | 닫힘 유지 | 100,000개 이전 정렬 중 새 검색 완료 및 타이머 수신 모두 정상 표시. 이전 정렬의 **실제 완료** 후에도 새 결과 1개/2개·pending 0. `r23.log`. |
+| R3 | 기존 경로 통과 / 병합 확장 실패 | 닫힌 창에 시트나 창을 다시 띄우지 않고 다른 열린 창/독립 모달로 응답 후 큐 완료. 대기 전송의 탭을 닫아도 생존 창에 질문하며 닫은 탭 뷰는 재부착하지 않음. **이미 시트가 붙은 창의 병합은 RD-H1로 실패.** `r23.log`, `tabs.log`, `merge-sheet-final1.log`, `merge-sheet-final2.log`. |
+| H1 | 닫힘 유지 | 동명 원본 첫 항목 건너뛰기·둘째 덮어쓰기에서 첫 원본 내용 보존. 배치 동명 항목 둘 다 유지·폴더 재귀 병합의 원본별 결정도 통과. `regression.log`. |
+| H2 | 닫힘 유지 | 이름 변경+1,001개 이동 후 연속 Undo 두 번: 원래 이름 복구·중간 이름 없음·Undo 0/Redo 2. Redo 두 번도 최종 이동·Undo 2. `regression.log`. |
+| H3 | 닫힘 유지 | 위치 변경 직후 이전 선택 동기 제거·삭제 메뉴 비활성. `regression.log`. |
+| M1 | 닫힘 유지 | Undo 실패 시 기록 유지, 장애 파일 제거 후 재시도 성공·Redo 생성. `regression.log`. |
+| M2 | 닫힘 유지 | 잘라내기 이동 중 새로 복사한 대지 URL이 이동 완료 후에도 남음. `regression.log`. |
+| M3 | 닫힘 유지 | 인라인 편집 중 합성 F5를 소비하지 않고 편집 유지. `regression.log`. |
+| M4 | 닫힘 유지 | 자세히→큰 아이콘 선택 유지, 아이콘에서 선택 해제 후 자세히로 돌아와도 빈 선택. `regression.log`. |
+| M5 | 닫힘 유지 | 검색 중 새 파일·새 폴더 생성 시 검색 종료·즉시 이름 편집. `regression.log`, `smoke.log`. |
+| M6 | 닫힘 유지 | 실제 복제 파일 생성·Cmd+D 메뉴 연결 확인. `regression.log`. |
+| M7 | 닫힘 유지 | 빈 트리 캐시에서 생성→이름 변경→삭제가 각각 반영됨. 외부 생성 뒤 F5에도 `external` 표시. `tree.log`. |
+| M8 | 닫힘 유지 | 10,000개를 200개씩 50회 append: 호출의 메인 점유 합계 **0.00343초**, 최종 10,000개 표시까지 **1.58초**. `regression.log`. |
+| L1·L2 | 닫힘 유지 | 루트 상위 이동 차단, 하위 폴더 메뉴 601개·마지막 항목 이동 확인. `regression.log`, `tree.log`. |
+| 활성 탭·키·메뉴 | 통과 / 입력 복원은 RD-L1 | 실제 키 창·`NSApp.target(forAction:)`·메뉴 키 상당 처리로 Cmd+T는 탭 1개 추가, Cmd+W는 탭 1개만 제거하고 창 유지. Ctrl+Tab/Shift+Ctrl+Tab 및 F3 포커스·삭제 메뉴 검증·전환 후 명령 대상 모두 활성 탭. `tabs.log` 단언 실패 0. 물리 키 입력/IME 시험은 아님. |
+| 탭 수명·기록 | 부분 통과 | 탭별 뒤로/앞으로 기록 독립. 닫자마자 search/watcher nil·이전 검색 배치 무시. 닫은 idle·검색·대기 작업 탭은 강한 소유 참조 제거와 작업 완료 후 weak 참조 nil 확인. **작업 완료의 UI 재시작은 RD-M1.** `tabs.log`. 영구 컨트롤러 누수로 분류하지 않았다. |
+| 탭 새 창·창 병합 | 기본 상태 통과 / 시트는 RD-H1 | 메뉴 응답자 체인을 통한 새 창 이동·재병합에서 같은 컨트롤러·부모·URL·기록·아이콘 보기·미리 보기 상태 유지. 병합된 탭 재선택 후 메뉴도 해당 탭 대상. `tabs.log`. |
+| 신호등 버튼·전체 화면 | 현재 환경 통과 | 640/1,500/900 크기 요청에서 닫기 버튼 중심이 콘텐츠 상단 23pt이고 hit-test도 실제 버튼. 전체 화면 진입/복귀 **2회**, inset 8→84 복원 및 복귀 후 두 크기에서 동일 정렬·hit-test 통과. `tabs.log`, `fullscreen.log`. 내부 `superview.superview` 및 프레임 직접 변경은 다른 AppKit 계층/OS에서의 호환성을 보장하지 않지만, 이번 환경에서 재현된 High는 없음. |
+| 라이트/다크 CGColor | 통과 | 기존 뷰를 재생성하지 않고 Aqua→Dark Aqua→Aqua 전환. 주소·검색 상자, 두 Mica tint, 선택 아이콘 셀의 레이어 색이 변경되고 최초 값으로 돌아옴. 예: 주소/검색 배경 1.0→0.12157, 선택색 `#CCE4F7`→`#0F3A5A`. `tabs.log`. |
+
+### 새 발견 표
+
+| ID / 심각도 | 파일:줄 | 문제 | 재현 / 근거 | 제안 |
+|---|---|---|---|---|
+| RD-H1 / **High** | `Sources/Explorer/BrowserWindowController.swift:325`, `:333`, `:343`; `Sources/Explorer/ConflictDialog.swift:237` | **충돌 질문 중인 창을 병합하면 숨겨진 시트가 응답을 기다려 모든 창의 파일 작업 큐가 막힌다.** 병합은 시트가 붙은 다른 창도 대상으로 삼고, 탭을 옮긴 뒤 `other.close()`로 부모 창을 강제 닫는다. 기존 `beginSheetModal`의 continuation은 끝나지 않는다. | **반복 2회 재현.** 창 A에서 기존 대상과 충돌하는 이동을 시작해 시트가 보이는 것을 확인. 창 B를 실제 키 창으로 만들고 ‘모든 창 병합’ 메뉴가 활성이고 action target이 B의 탭 컨트롤러임을 확인한 뒤 `NSApp.sendAction` 실행. A는 비표시·isClosed, 시트도 비표시지만 A.attachedSheet는 남고 B에는 시트 없음. 옮긴 탭은 B 소속·isClosed false. **4초 동안 보이는 시트 host 0·전송 미완료·후속 파일 미생성·pending 2**. 원본/기존 대상 내용은 보존되어 데이터 소실로 분류하지 않음. 하네스가 숨겨진 A의 시트를 `endSheet`로 응답시켜야 전송·후속 작업 완료·pending 0. `merge-sheet-final1.log`, `merge-sheet-final2.log`, `main-merge-sheet.swift`. | 시트가 붙은 원본 창은 병합 대상에서 제외하거나 응답 종료까지 병합을 미룬다. 메뉴 검증도 실제 병합 가능한 창을 기준으로 한다. 질문을 이동하려면 기존 continuation을 안전하게 종료하고 생존 창에 다시 연결해야 하며, 기다리는 시트를 숨긴 채 창을 닫으면 안 된다. |
+| RD-M1 / Medium | `Sources/Explorer/BrowserViewController.swift:196`, `:291`, `:304`, `:384`; `Sources/Explorer/BrowserActions.swift:397`, `:402` | 닫은 탭의 대기 작업 완료가 `reload`를 실행하여, tearDown에서 중지한 **감시자 또는 재귀 검색을 다시 시작**한다. `isClosed`가 UI 재시작을 막지 않는다. | 큐 앞에 지연 작업을 두고 탭에서 충돌 전송/파일 생성을 예약한 뒤 그 탭을 닫음. 닫은 직후 watcher nil이지만 전송 완료 후 `isClosed == true`, `view.window == nil`인 컨트롤러에 **watcher가 다시 존재**. 검색 중 닫은 탭은 완료 후 새 세대 4의 `SORT_COMPLETED`가 발생해 검색 재실행도 확인. `tabs.log`, `main-tabs.swift`. 시험용 소유 참조를 없앤 일반 대기 탭의 weak 참조는 nil이므로 영구 누수 주장과 구분함. | 파일 작업·Undo 기록·공유 변경 알림은 끝까지 처리하되, 닫은 탭에 대한 목록 갱신/이름 편집/검색/감시 시작을 차단한다. `reload`·`loadCurrent`·`startSearch`에도 닫힘 guard를 둔다. |
+| RD-M2 / Medium | `Sources/Explorer/TabStrip.swift:52`, `:58`, `:72` | 탭 최소 폭 72pt를 유지하면서 스크롤·오버플로 처리가 없어, 탭이 많아지면 활성 탭과 + 버튼이 창 밖으로 밀린다. | 최소 크기를 요청한 실제 탭 줄 폭 **667pt**에서 12개 생성. 선택 index 11의 탭 프레임은 **x=876, 폭 72**, bounds와 교차하지 않음. scroll view 없음. + 시작점도 코드의 동일 배치식상 x=952로 창 밖이다. Cmd+T/Ctrl+Tab으로 선택은 바뀌지만 해당 탭을 보고 클릭할 수 없다. `overflow.log`, `main-overflow.swift`. | 탭 줄을 수평 스크롤하고 활성 탭을 자동 노출하거나 오버플로 메뉴를 제공한다. + 버튼은 별도 고정 영역으로 확보한다. |
+| RD-L1 / Low | `Sources/Explorer/BrowserWindowController.swift:249`, `:259`, `:265`; `Sources/Explorer/AddressBar.swift:199`, `:213` | 주소 편집 중 탭을 바꾸고 돌아오면 입력 포커스와 미완성 경로가 복원되지 않는다. 저장한 responder는 창이 공유하는 field editor이며, 뷰 제거로 주소 편집이 종료된다. | 주소에 `/tmp/unfinished-path` 입력 후 다른 탭→원래 탭. `isEditing` true→false, firstResponder는 파일 표이며 `savedFirstResponder`만 NSTextView로 남음. 주소 입력을 다시 열면 미완성 입력 대신 현재 폴더 경로로 덮어씀. `overflow.log`. 명령이 비활성 탭에 전달되는 문제로는 분류하지 않았다. | 공유 field editor 대신 논리적인 포커스 대상과 주소 편집 문자열/선택 범위를 탭별로 저장하고, 복귀 때 해당 입력 컨트롤에서 편집을 재개한다. |
+
+### 재현 신뢰도와 남은 범위
+
+- RD-H1은 기본 탭 이동·병합 통과와 별개이며, **시트가 이미 열린 뒤 병합**하는 순서에서 발생한다. 처음에는 시험 앱 비활성으로 메뉴 action target이 nil이었던 `merge-sheet.log`가 있었고 이 실행은 판정에서 제외했다. 활성화 후 action target까지 확인한 `merge-sheet-active.log`에서 최초 재현했으며, 최종 두 로그에서 반복 확인했다. 큐·충돌·창 병합 로직은 하네스에서 변경하지 않았다.
+- 보조 `smoke.log`에서 실제 디스크 검색, 폴더 열기·뒤로/앞으로, 숨김·정렬·보기 선택, 이름 변경 확정/취소, 같은 폴더 붙여넣기, 경로 복사, 영구 삭제 취소, 휴지통 Undo를 확인했다. 시트 중 native `performClose`는 창을 닫지 않고 응답 후 큐를 진행했다(`performclose.log`). 이 정상 보호를 병합의 직접 `close()`가 우회한다.
+- 실제 한국어 IME·물리 마우스/키 입력·Finder 양방향 대지·외부 앱 드래그·서로 다른 실물/네트워크 볼륨, 다른 macOS/AppKit 버전은 검증하지 않았다. 화면 캡처를 통한 전체 비주얼 품질 평가도 이번 코드/실행 회귀 판정의 근거가 아니다. 원본 소스 수정은 하지 않았으며 RD-H1~RD-L1은 미수정 상태다.

@@ -1,6 +1,8 @@
 import AppKit
 
-/// 화면 확인용 스냅숏. 환경 변수 EXPLORER_SNAPSHOT_DIR 이 있을 때만 돈다.
+#if DEBUG
+
+/// 화면 확인용 스냅숏. 디버그 빌드에만 들어간다. 환경 변수 EXPLORER_SNAPSHOT_DIR 이 있을 때만 돈다.
 /// 첫 창으로 정해진 장면(자세히·아이콘·내 Mac·빈 폴더)을 라이트/다크로 차례로 띄우고
 /// NSView.cacheDisplay 로 창 내용을 PNG 로 남긴 뒤 종료한다. 화면 녹화 권한이 없어도 된다.
 @MainActor
@@ -91,3 +93,4 @@ enum DebugSnapshot {
         try? rep.representation(using: .png, properties: [:])?.write(to: url)
     }
 }
+#endif
