@@ -9,6 +9,8 @@ enum Theme {
     static let accent = dynamic(light: hex(0x005FB8), dark: hex(0x60CDFF))
     static let windowBackground = dynamic(light: hex(0xF3F3F3), dark: hex(0x202020))
     static let toolbarBackground = dynamic(light: hex(0xF9F9F9), dark: hex(0x2C2C2C))
+    /// 탭 줄 바탕. 도구 영역과 대비가 분명하도록 windowBackground 보다 한 단계 진하다 (DESIGN 6장).
+    static let tabStripBackground = dynamic(light: hex(0xE8E8E8), dark: hex(0x1B1B1B))
     static let contentBackground = dynamic(light: hex(0xFFFFFF), dark: hex(0x191919))
     static let hoverFill = dynamic(light: NSColor(white: 0, alpha: 0.04), dark: NSColor(white: 1, alpha: 0.06))
     /// 누르고 있는 버튼. hoverFill 보다 한 단계 진하다.
@@ -21,10 +23,10 @@ enum Theme {
     static let primaryText = dynamic(light: hex(0x1A1A1A), dark: hex(0xF3F3F3))
     static let secondaryText = dynamic(light: hex(0x5D5D5D), dark: hex(0xA0A0A0))
     static let divider = dynamic(light: NSColor(white: 0, alpha: 0.08), dark: NSColor(white: 1, alpha: 0.08))
+    /// 비활성 명령 아이콘·글자의 불투명도 (DESIGN 6장).
+    static let disabledAlpha: CGFloat = 0.3
     /// 주소 상자·검색 상자 바탕. 도구 영역보다 한 단계 밝다(다크에서는 어둡다).
     static let fieldBackground = dynamic(light: hex(0xFFFFFF), dark: hex(0x1F1F1F))
-    /// 강조 버튼 위의 글자.
-    static let onAccent = dynamic(light: .white, dark: .black)
     static let folderBody = hex(0xFFC83D)
     static let folderTab = hex(0xE8A82A)
     static let driveCritical = hex(0xC42B1C)
@@ -48,9 +50,17 @@ enum Theme {
         static let status: CGFloat = 11
     }
 
+    /// 4·8·12·16 간격 체계 (DESIGN 6장).
+    enum Space {
+        static let xs: CGFloat = 4
+        static let s: CGFloat = 8
+        static let m: CGFloat = 12
+        static let l: CGFloat = 16
+    }
+
     enum Metric {
         static let tabStripHeight: CGFloat = 40
-        static let addressRowHeight: CGFloat = 48
+        static let addressRowHeight: CGFloat = 44
         static let addressBoxHeight: CGFloat = 32
         static let commandBarHeight: CGFloat = 40
         static let statusBarHeight: CGFloat = 24
@@ -245,9 +255,11 @@ enum FolderIcon {
 final class MicaView: NSVisualEffectView {
     private let tint = NSView()
     private let tintAlpha: CGFloat
+    private let tintColor: NSColor
 
-    init(tintAlpha: CGFloat = 0.78) {
+    init(tintAlpha: CGFloat = 0.78, color: NSColor? = nil) {
         self.tintAlpha = tintAlpha
+        tintColor = color ?? Theme.windowBackground
         super.init(frame: .zero)
         material = .underWindowBackground
         blendingMode = .behindWindow
@@ -265,7 +277,7 @@ final class MicaView: NSVisualEffectView {
     }
 
     private func updateColors() {
-        tint.layer?.backgroundColor = Theme.cg(Theme.windowBackground.withAlphaComponent(tintAlpha), in: self)
+        tint.layer?.backgroundColor = Theme.cg(tintColor.withAlphaComponent(tintAlpha), in: self)
     }
 }
 
@@ -299,7 +311,7 @@ class FillView: NSView {
 // MARK: - 버튼
 
 /// 테두리 없이 마우스를 올리면 hoverFill, 누르면 pressedFill 을 칠하는 버튼.
-/// circle 이면 원형(주소 줄 ← → ↑ ⟳), accent 면 강조색으로 채운 버튼(새로 만들기)이다.
+/// circle 이면 원형(주소 줄 ← → ↑ ⟳), accent 면 옅은 강조 배경에 강조색 글자를 쓰는 버튼(새로 만들기)이다.
 @MainActor
 class ThemedButton: NSButton {
     enum Shape { case rounded, circle }
@@ -348,7 +360,7 @@ class ThemedButton: NSButton {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func updateTint() {
-        contentTintColor = isAccent ? Theme.onAccent : Theme.primaryText
+        contentTintColor = isAccent ? Theme.accent : Theme.primaryText
     }
 
     override var intrinsicContentSize: NSSize {
@@ -393,11 +405,9 @@ class ThemedButton: NSButton {
             path = NSBezierPath(roundedRect: rect, xRadius: Theme.Radius.control, yRadius: Theme.Radius.control)
         }
         if isAccent {
-            var color = Theme.accent
-            if !isEnabled { color = color.withAlphaComponent(0.4) } else if isHighlighted {
-                color = color.blended(withFraction: 0.15, of: .black) ?? color
-            } else if isHovered { color = color.blended(withFraction: 0.08, of: .white) ?? color }
-            color.setFill()
+            // 꽉 찬 파랑 대신 accent 12% 바탕 (DESIGN 6장). 마우스를 올리면 18%, 누르면 24%.
+            let alpha: CGFloat = !isEnabled ? 0.06 : isHighlighted ? 0.24 : isHovered ? 0.18 : 0.12
+            Theme.accent.withAlphaComponent(alpha).setFill()
             path.fill()
         } else if isEnabled, isHighlighted {
             Theme.pressedFill.setFill(); path.fill()
@@ -407,8 +417,8 @@ class ThemedButton: NSButton {
             Theme.hoverFill.setFill(); path.fill()
         }
 
-        let textColor: NSColor = isAccent ? Theme.onAccent : Theme.primaryText
-        let alpha: CGFloat = isEnabled ? 1 : 0.35
+        let textColor: NSColor = isAccent ? Theme.accent : Theme.primaryText
+        let alpha: CGFloat = isEnabled ? 1 : Theme.disabledAlpha
         var titleSize = NSSize.zero
         let attributes: [NSAttributedString.Key: Any] = [.font: font ?? .systemFont(ofSize: 13),
                                                          .foregroundColor: textColor.withAlphaComponent(alpha)]
@@ -468,13 +478,18 @@ final class ThemedSplitView: NSSplitView {
 final class ThemedRowView: NSTableRowView {
     var showsAccentBar = false
     var horizontalInset: CGFloat = 4
+    /// 위쪽 여백. 이만큼은 하이라이트를 칠하지 않는다(탐색 창 섹션 머리글 위 간격).
+    var topInset: CGFloat = 0
     var isHovered = false { didSet { if isHovered != oldValue { needsDisplay = true } } }
 
     override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
     override var isEmphasized: Bool { get { false } set {} }
 
     private var highlightRect: NSRect {
-        bounds.insetBy(dx: horizontalInset, dy: 1)
+        var rect = bounds
+        rect.size.height -= topInset
+        if isFlipped { rect.origin.y += topInset }
+        return rect.insetBy(dx: horizontalInset, dy: 1)
     }
 
     override func drawBackground(in dirtyRect: NSRect) {

@@ -108,6 +108,35 @@ final class FileListController: NSObject {
         tableScroll.autohidesScrollers = true
         tableScroll.backgroundColor = Theme.contentBackground
         tableScroll.borderType = .noBorder
+
+        // 이름 열이 남는 폭을 차지한다 (DESIGN 6장).
+        tableScroll.contentView.postsFrameChangedNotifications = true
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(clipFrameChanged(_:)), name: NSView.frameDidChangeNotification,
+                           object: tableScroll.contentView)
+        center.addObserver(self, selector: #selector(columnDidResize(_:)), name: NSTableView.columnDidResizeNotification,
+                           object: tableView)
+    }
+
+    private var isFittingNameColumn = false
+
+    /// 이름 열 폭 = 보이는 폭 - 다른 열 폭. 이름 열을 직접 넓히면 그대로 두고 가로 스크롤한다.
+    private func fitNameColumn() {
+        guard !isFittingNameColumn, let name = tableView.tableColumns.first(where: { $0.identifier == Column.name })
+        else { return }
+        let others = tableView.tableColumns.filter { !$0.isHidden && $0 !== name }.reduce(0) { $0 + $1.width }
+        let width = max(200, (tableScroll.contentView.bounds.width - others).rounded(.down))
+        guard abs(name.width - width) >= 1 else { return }
+        isFittingNameColumn = true
+        name.width = width
+        isFittingNameColumn = false
+    }
+
+    @objc private func clipFrameChanged(_ note: Notification) { fitNameColumn() }
+
+    @objc private func columnDidResize(_ note: Notification) {
+        let column = note.userInfo?["NSTableColumn"] as? NSTableColumn
+        if column?.identifier != Column.name { fitNameColumn() }
     }
 
     private func addColumn(_ id: NSUserInterfaceItemIdentifier, _ title: String, width: CGFloat, sortKey: SortKey?) {
@@ -412,7 +441,7 @@ extension FileListController: NSTableViewDataSource, NSTableViewDelegate {
         if id == Column.size { text.alignment = .right }
         NSLayoutConstraint.activate([
             text.leadingAnchor.constraint(equalTo: leading, constant: id == Column.name ? 8 : 10),
-            text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: id == Column.size ? -14 : -4),
+            text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: id == Column.size ? -Theme.Space.l : -4),
             text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell

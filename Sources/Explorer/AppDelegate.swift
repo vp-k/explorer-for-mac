@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 탭은 자체 탭 줄로 만든다. macOS 창 탭은 끈다.
         NSWindow.allowsAutomaticWindowTabbing = false
+        AppState.shared.applyTheme()
         NSApp.mainMenu = MainMenu.build()
         GlobalKeyHandler.install()
         AppState.shared.operations.onIdle = { [weak self] in self?.operationsDidFinish() }
@@ -144,11 +145,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openWindow(at: currentFolder)
     }
 
+    @objc func setTheme(_ sender: NSMenuItem) {
+        if let theme = AppState.ThemeMode(rawValue: sender.tag) { AppState.shared.theme = theme }
+    }
+
     @objc func newTab(_ sender: Any?) {
         if let window = NSApp.keyWindow, window.browserTabs != nil {
             openTab(in: window, at: currentFolder)
         } else {
             openWindow(at: currentFolder)
         }
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(setTheme(_:)) {
+            menuItem.state = menuItem.tag == AppState.shared.theme.rawValue ? .on : .off
+        }
+        return true
     }
 }

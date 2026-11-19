@@ -3,7 +3,7 @@ import AppKit
 #if DEBUG
 
 /// 화면 확인용 스냅숏. 디버그 빌드에만 들어간다. 환경 변수 EXPLORER_SNAPSHOT_DIR 이 있을 때만 돈다.
-/// 첫 창으로 정해진 장면(자세히·아이콘·내 Mac·빈 폴더)을 라이트/다크로 차례로 띄우고
+/// 첫 창으로 정해진 장면(자세히·아이콘·내 Mac·빈 폴더)을 라이트/다크로 차례로 띄우고 탭 넘침도 한 장 뜨고
 /// NSView.cacheDisplay 로 창 내용을 PNG 로 남긴 뒤 종료한다. 화면 녹화 권한이 없어도 된다.
 @MainActor
 enum DebugSnapshot {
@@ -54,6 +54,12 @@ enum DebugSnapshot {
             await pause()
             capture(window, folder.appendingPathComponent("\(name)-empty.png"))
         }
+
+        // 탭이 넘칠 때의 좌우 화살표.
+        NSApp.appearance = NSAppearance(named: .aqua)
+        for _ in 0..<14 { AppDelegate.shared.openTab(in: window, at: start) }
+        await pause()
+        capture(window, folder.appendingPathComponent("light-tabs-overflow.png"))
     }
 
     private static func capture(_ window: NSWindow, _ url: URL) {

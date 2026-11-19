@@ -337,8 +337,13 @@ final class ThemedHeaderCell: NSTableHeaderCell {
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
         Theme.contentBackground.setFill()
         cellFrame.fill()
-        Theme.divider.setFill()
-        NSRect(x: cellFrame.maxX - 1, y: cellFrame.minY + 6, width: 1, height: cellFrame.height - 12).fill()
+        // 열 사이에만 구분선을 긋는다. 맨 오른쪽 열 끝은 비워 둔다.
+        let table = (controlView as? NSTableHeaderView)?.tableView
+        let isLast = table?.tableColumns.last(where: { !$0.isHidden })?.headerCell === self
+        if !isLast {
+            Theme.divider.setFill()
+            NSRect(x: cellFrame.maxX - 1, y: cellFrame.minY + 6, width: 1, height: cellFrame.height - 12).fill()
+        }
         drawInterior(withFrame: cellFrame, in: controlView)
     }
 
@@ -355,7 +360,7 @@ final class ThemedHeaderCell: NSTableHeaderCell {
             .foregroundColor: Theme.secondaryText, .paragraphStyle: style,
         ]
         let titleRect = alignment == .right
-            ? NSRect(x: cellFrame.minX + 24, y: cellFrame.midY - 8, width: cellFrame.width - 38, height: 16)
+            ? NSRect(x: cellFrame.minX + 24, y: cellFrame.midY - 8, width: cellFrame.width - 24 - Theme.Space.l, height: 16)
             : NSRect(x: cellFrame.minX + 10, y: cellFrame.midY - 8, width: cellFrame.width - 34, height: 16)
         (stringValue as NSString).draw(with: titleRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
                                        attributes: attributes)

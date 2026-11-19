@@ -1,7 +1,8 @@
 import AppKit
 
 /// 명령 모음: "새로 만들기" 강조 버튼, 잘라내기·복사·붙여넣기·이름 바꾸기·삭제 아이콘 묶음, 구분선,
-/// "정렬 ▾" "보기 ▾" "···" 순서 (DESIGN 1장).
+/// "정렬 ▾" "보기 ▾" "···" 순서 (DESIGN 1장). 바탕은 주소 줄과 같고 위 구분선이 없어 한 덩어리로 보인다.
+/// 아래 구분선 하나가 도구 영역과 본문을 나눈다 (DESIGN 6장).
 @MainActor
 final class CommandBar: FillView {
     private weak var browser: BrowserViewController?
@@ -37,9 +38,8 @@ final class CommandBar: FillView {
         let stack = NSStackView(views: [newButton, separator(), cutButton, copyButton, pasteButton, renameButton,
                                         deleteButton, separator(), sortButton, viewButton, separator(), moreButton])
         stack.orientation = .horizontal
-        stack.spacing = 2
-        stack.setCustomSpacing(10, after: newButton)
-        stack.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
+        stack.spacing = Theme.Space.xs
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: Theme.Space.m, bottom: 0, right: Theme.Space.m)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -66,7 +66,7 @@ final class CommandBar: FillView {
         holder.translatesAutoresizingMaskIntoConstraints = false
         holder.addSubview(line)
         NSLayoutConstraint.activate([
-            holder.widthAnchor.constraint(equalToConstant: 13),
+            holder.widthAnchor.constraint(equalToConstant: Theme.Space.s + 1),
             holder.heightAnchor.constraint(equalToConstant: 20),
             line.centerXAnchor.constraint(equalTo: holder.centerXAnchor),
             line.centerYAnchor.constraint(equalTo: holder.centerYAnchor),

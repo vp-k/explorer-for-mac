@@ -121,6 +121,12 @@ enum MainMenu {
         add(menu, "파일 확장명", #selector(B.toggleExtensions(_:)))
         add(menu, "미리 보기 창", #selector(B.togglePreviewPane(_:)), "p", .option)
         menu.addItem(.separator())
+        let theme = NSMenu(title: "테마")
+        for option in AppState.ThemeMode.allCases {
+            add(theme, option.title, #selector(AppDelegate.setTheme(_:)), tag: option.rawValue, target: AppDelegate.shared)
+        }
+        add(menu, "테마", nil).submenu = theme
+        menu.addItem(.separator())
         add(menu, "새로 고침", #selector(B.refresh(_:)), "r")
         add(menu, "주소 표시줄로 이동", #selector(B.focusAddressBar(_:)), "l")
         menu.addItem(.separator())

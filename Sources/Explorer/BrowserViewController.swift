@@ -85,7 +85,7 @@ final class BrowserViewController: NSViewController {
 
     private func buildLayout() {
         let navButtons = NSStackView(views: [backButton, forwardButton, upButton, refreshButton])
-        navButtons.spacing = 2
+        navButtons.spacing = Theme.Space.xs
 
         searchField.placeholderString = "검색"
         searchField.sendsSearchStringImmediately = false
@@ -97,8 +97,8 @@ final class BrowserViewController: NSViewController {
         let top = FillView(Theme.toolbarBackground)
         let topStack = NSStackView(views: [navButtons, addressBar, searchBox])
         topStack.orientation = .horizontal
-        topStack.spacing = 8
-        topStack.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 10)
+        topStack.spacing = Theme.Space.s
+        topStack.edgeInsets = NSEdgeInsets(top: 0, left: Theme.Space.m, bottom: 0, right: Theme.Space.m)
         UI.pin(topStack, to: top)
         addressBar.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let searchWidth = searchBox.widthAnchor.constraint(equalTo: top.widthAnchor, multiplier: 0.24)

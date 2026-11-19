@@ -25,6 +25,31 @@ final class AppState {
         didSet { defaults.set(showExtensions, forKey: "showExtensions"); post(Self.settingsChanged) }
     }
 
+    /// 화면 테마. 보기 > 테마 메뉴에서 고르고 저장한다 (DESIGN 6장).
+    enum ThemeMode: Int, CaseIterable {
+        case system, light, dark
+
+        var title: String {
+            switch self {
+            case .system: return "시스템"
+            case .light: return "라이트"
+            case .dark: return "다크"
+            }
+        }
+    }
+
+    var theme: ThemeMode {
+        didSet { defaults.set(theme.rawValue, forKey: "theme"); applyTheme() }
+    }
+
+    func applyTheme() {
+        switch theme {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+
     /// F2 잘라내기 상태. 시스템 대지와의 연동은 ClipboardBridge 가 맡는다.
     var clipboard = FileClipboard()
     /// 잘라내기를 기록한 시점의 대지 changeCount. 다르면 다른 앱이 대지를 바꾼 것이다.
@@ -42,6 +67,7 @@ final class AppState {
     private init() {
         showHidden = defaults.bool(forKey: "showHidden")
         showExtensions = defaults.object(forKey: "showExtensions") as? Bool ?? true
+        theme = ThemeMode(rawValue: defaults.integer(forKey: "theme")) ?? .system
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification,
                      NSWorkspace.didRenameVolumeNotification] {

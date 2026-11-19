@@ -124,7 +124,7 @@ final class BrowserTabsController: NSViewController, NSMenuItemValidation {
     private(set) var browsers: [BrowserViewController] = []
     private(set) var selectedIndex = 0
     private let strip = TabStripView()
-    private let stripBackground = MicaView(tintAlpha: 0.7)
+    private let stripBackground = MicaView(tintAlpha: 0.88, color: Theme.tabStripBackground)
     private let container = NSView()
     /// 창이 닫혀 모든 탭을 정리했다. 닫힌 창에 질문을 띄우지 않는 데 쓴다 (R3).
     private(set) var isClosed = false

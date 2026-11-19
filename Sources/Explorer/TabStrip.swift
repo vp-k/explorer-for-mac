@@ -4,7 +4,7 @@ import AppKit
 /// 활성 탭은 아래 도구 영역과 같은 색으로 이어진다. 빈 곳을 끌면 창이 움직이고 두 번 누르면 확대/축소한다.
 /// 탭은 하위 뷰 없이 직접 그리고 누른 위치로 어느 부분인지 가린다.
 /// 탭이 많으면 최소 폭까지 줄이고, 그래도 넘치면 탭 영역만 가로로 스크롤한다. "+" 버튼은 오른쪽 끝에 고정하고
-/// 활성 탭은 항상 보이게 스크롤을 맞춘다 (RD-M2).
+/// 활성 탭은 항상 보이게 스크롤을 맞춘다 (RD-M2). 넘칠 때만 탭 영역 양끝에 좌우 화살표 버튼이 생긴다 (DESIGN 6장).
 @MainActor
 final class TabStripView: NSView {
     struct Tab {
@@ -21,6 +21,7 @@ final class TabStripView: NSView {
     private static let maxTabWidth: CGFloat = 240
     private static let minTabWidth: CGFloat = 72
     private static let plusWidth: CGFloat = 36
+    private static let arrowWidth: CGFloat = 28
 
     var tabs: [Tab] = [] { didSet { tabsChanged() } }
     var selectedIndex = 0 { didSet { revealSelected(); needsDisplay = true; updateAccessibility() } }
@@ -31,7 +32,7 @@ final class TabStripView: NSView {
     var onNew: (() -> Void)?
     var onMove: ((Int, Int) -> Void)?
 
-    private enum Part: Equatable { case tab(Int), close(Int), plus, none }
+    private enum Part: Equatable { case tab(Int), close(Int), plus, scrollLeft, scrollRight, none }
     private var hovered: Part = .none { didSet { if hovered != oldValue { needsDisplay = true } } }
     private var pressed: Part = .none { didSet { if pressed != oldValue { needsDisplay = true } } }
     private var accessibilityTabs: [TabAccessibilityElement] = []
@@ -53,9 +54,24 @@ final class TabStripView: NSView {
 
     // MARK: 배치
 
-    /// 탭을 놓을 수 있는 폭. "+" 버튼 자리는 뺀다.
-    private var availableWidth: CGFloat {
+    /// "+" 버튼 자리를 뺀 폭. 화살표 버튼 자리는 빼기 전이다.
+    private var stripWidth: CGFloat {
         max(0, bounds.width - leadingInset - Self.plusWidth - 16)
+    }
+
+    /// 최소 폭으로 줄여도 탭이 다 들어가지 않는다. 이때만 좌우 화살표를 보인다.
+    private var overflows: Bool {
+        CGFloat(tabs.count) * Self.minTabWidth > stripWidth
+    }
+
+    /// 첫 탭이 시작하는 x. 넘치면 왼쪽 화살표 자리만큼 민다.
+    private var tabsStart: CGFloat {
+        leadingInset + (overflows ? Self.arrowWidth : 0)
+    }
+
+    /// 탭을 놓을 수 있는 폭. "+" 버튼과 화살표 자리는 뺀다.
+    private var availableWidth: CGFloat {
+        max(0, stripWidth - (overflows ? Self.arrowWidth * 2 : 0))
     }
 
     private var tabWidth: CGFloat {
@@ -69,11 +85,11 @@ final class TabStripView: NSView {
 
     /// 탭이 보이는 영역. 넘치는 탭은 이 밖으로 잘린다. 활성 탭 아래 양끝의 휜 부분만큼 왼쪽을 더 둔다.
     private var tabArea: NSRect {
-        NSRect(x: leadingInset - 6, y: 0, width: availableWidth + 8, height: bounds.height)
+        NSRect(x: tabsStart - 6, y: 0, width: availableWidth + 8, height: bounds.height)
     }
 
     private func tabRect(_ index: Int) -> NSRect {
-        NSRect(x: leadingInset + CGFloat(index) * tabWidth - scrollOffset, y: Self.tabTop,
+        NSRect(x: tabsStart + CGFloat(index) * tabWidth - scrollOffset, y: Self.tabTop,
                width: tabWidth, height: bounds.height - Self.tabTop)
     }
 
@@ -87,12 +103,25 @@ final class TabStripView: NSView {
     }
 
     private var plusRect: NSRect {
-        let x = tabs.isEmpty ? leadingInset : min(tabRect(tabs.count - 1).maxX, leadingInset + availableWidth) + 4
+        let x = tabs.isEmpty ? leadingInset
+            : overflows ? rightArrowRect.maxX + 4 : min(tabRect(tabs.count - 1).maxX, tabsStart + availableWidth) + 4
         return NSRect(x: x, y: Self.tabCenterFromTop - 14, width: Self.plusWidth - 4, height: 28)
+    }
+
+    private var leftArrowRect: NSRect {
+        NSRect(x: leadingInset, y: Self.tabCenterFromTop - 12, width: Self.arrowWidth - 4, height: 24)
+    }
+
+    private var rightArrowRect: NSRect {
+        NSRect(x: tabsStart + availableWidth + 4, y: Self.tabCenterFromTop - 12, width: Self.arrowWidth - 4, height: 24)
     }
 
     private func part(at point: NSPoint) -> Part {
         if plusRect.contains(point) { return .plus }
+        if overflows {
+            if leftArrowRect.contains(point) { return .scrollLeft }
+            if rightArrowRect.contains(point) { return .scrollRight }
+        }
         guard tabArea.contains(point) else { return .none }
         for index in tabs.indices where tabRect(index).contains(point) {
             if showsClose(index), closeRect(index).insetBy(dx: -2, dy: -2).contains(point) { return .close(index) }
@@ -157,6 +186,10 @@ final class TabStripView: NSView {
             if !rect.isEmpty { addToolTip(rect, owner: tab.toolTip as NSString, userData: nil) }
         }
         addToolTip(plusRect, owner: "새 탭 (⌘T)" as NSString, userData: nil)
+        if overflows {
+            addToolTip(leftArrowRect, owner: "이전 탭 보기" as NSString, userData: nil)
+            addToolTip(rightArrowRect, owner: "다음 탭 보기" as NSString, userData: nil)
+        }
     }
 
     // MARK: 그리기
@@ -168,7 +201,11 @@ final class TabStripView: NSView {
         for index in tabs.indices where index != selectedIndex { drawTab(index, active: active) }
         if tabs.indices.contains(selectedIndex) { drawTab(selectedIndex, active: active) }
         NSGraphicsContext.restoreGraphicsState()
-        drawPlus()
+        if overflows {
+            drawButton(.scrollLeft, symbol: "chevron.left", in: leftArrowRect, enabled: scrollOffset > 0)
+            drawButton(.scrollRight, symbol: "chevron.right", in: rightArrowRect, enabled: scrollOffset < maxScrollOffset)
+        }
+        drawButton(.plus, symbol: "plus", in: plusRect, enabled: true)
     }
 
     private func drawTab(_ index: Int, active: Bool) {
@@ -245,13 +282,14 @@ final class TabStripView: NSView {
         return path
     }
 
-    private func drawPlus() {
-        let rect = plusRect
-        if hovered == .plus || pressed == .plus {
-            (pressed == .plus ? Theme.pressedFill : Theme.hoverFill).setFill()
+    /// "+" 와 좌우 화살표 버튼. 끝까지 밀었으면 화살표를 흐리게 그린다.
+    private func drawButton(_ part: Part, symbol: String, in rect: NSRect, enabled: Bool) {
+        if enabled, hovered == part || pressed == part {
+            (pressed == part ? Theme.pressedFill : Theme.hoverFill).setFill()
             NSBezierPath(roundedRect: rect, xRadius: Theme.Radius.control, yRadius: Theme.Radius.control).fill()
         }
-        drawSymbol("plus", size: 13, in: rect, color: Theme.primaryText)
+        let color = enabled ? Theme.primaryText : Theme.primaryText.withAlphaComponent(Theme.disabledAlpha)
+        drawSymbol(symbol, size: part == .plus ? 13 : 11, in: rect, color: color)
     }
 
     private func drawSymbol(_ name: String, size: CGFloat, in rect: NSRect, color: NSColor) {
@@ -305,7 +343,7 @@ final class TabStripView: NSView {
         case .tab(let index):
             onSelect?(index)
             trackTabDrag(from: index, event: event)
-        case .close, .plus:
+        case .close, .plus, .scrollLeft, .scrollRight:
             trackButton(hit)
         }
     }
@@ -319,7 +357,7 @@ final class TabStripView: NSView {
             if next.type == .leftMouseUp { break }
             let x = convert(next.locationInWindow, from: nil).x
             guard abs(x - startX) > 4 else { continue }
-            let target = Int(((x - leadingInset + scrollOffset) / tabWidth).rounded(.down))
+            let target = Int(((x - tabsStart + scrollOffset) / tabWidth).rounded(.down))
             let clamped = max(0, min(tabs.count - 1, target))
             if clamped != current {
                 onMove?(current, clamped)
@@ -342,6 +380,8 @@ final class TabStripView: NSView {
         switch hit {
         case .close(let index): onClose?(index)
         case .plus: onNew?()
+        case .scrollLeft: setScrollOffset(scrollOffset - tabWidth)
+        case .scrollRight: setScrollOffset(scrollOffset + tabWidth)
         default: break
         }
     }

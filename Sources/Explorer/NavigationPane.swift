@@ -50,6 +50,9 @@ extension NavNode {
         return FileSorter.sorted(items, by: ExplorerCore.SortOrder())
     }
 
+    /// 빠른 액세스·내 Mac 처럼 섹션 머리글로 그리는 노드.
+    var isSectionHeader: Bool { kind == .header || kind == .thisMac }
+
     /// 트리 노드 중 하위 폴더를 디스크에서 읽어 채우는 종류.
     var readsChildren: Bool { [.home, .folder, .pinned, .volume].contains(kind) }
 }
@@ -241,6 +244,7 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let node = item as? NavNode else { return nil }
         if let volume = node.volume { return VolumeCellView(volume: volume) }
+        if node.isSectionHeader { return sectionHeaderCell(node) }
         let cell = NSTableCellView()
         let image = NSImageView(image: icon(for: node))
         image.translatesAutoresizingMaskIntoConstraints = false
@@ -252,10 +256,12 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
         cell.textField = text
         var trailing = cell.trailingAnchor
         if node.kind == .pinned {
-            // 빠른 액세스 고정 표시. 흐리게 (DESIGN 4장).
+            // 빠른 액세스 고정 표시. 흐리게, 마우스를 올린 행에서만 보인다 (DESIGN 4·6장).
             let pin = NSImageView(image: Theme.symbol("pin.fill", "고정됨", size: 10))
             pin.translatesAutoresizingMaskIntoConstraints = false
             pin.contentTintColor = Theme.secondaryText.withAlphaComponent(0.6)
+            pin.identifier = Self.pinIdentifier
+            pin.isHidden = true
             cell.addSubview(pin)
             NSLayoutConstraint.activate([
                 pin.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
@@ -275,18 +281,37 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
         return cell
     }
 
+    private static let pinIdentifier = NSUserInterfaceItemIdentifier("pin")
+
+    /// 빠른 액세스·내 Mac 섹션 머리글: 11pt 회색 굵은 글자 (DESIGN 6장). 내 Mac 은 눌러서 이동할 수 있다.
+    private func sectionHeaderCell(_ node: NavNode) -> NSTableCellView {
+        let cell = NSTableCellView()
+        let text = UI.label(node.title, size: Theme.Font.status, color: Theme.secondaryText)
+        text.font = .systemFont(ofSize: Theme.Font.status, weight: .semibold)
+        cell.addSubview(text)
+        cell.textField = text
+        NSLayoutConstraint.activate([
+            text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4),
+            text.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -Theme.Space.s),
+        ])
+        return cell
+    }
+
     func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
         let row = ThemedRowView()
         row.showsAccentBar = true
+        if (item as? NavNode)?.isSectionHeader == true { row.topInset = Theme.Space.m }
         return row
     }
 
     private func icon(for node: NavNode) -> NSImage {
         switch node.kind {
+        // 폴더는 노랑, 그 밖의 기호는 accent 한 색으로 맞춘다 (DESIGN 6장).
         case .home: return tinted("house.fill", "홈", Theme.accent)
         case .header: return tinted("star.fill", "빠른 액세스", Theme.accent)
         case .thisMac: return ThisMacView.computerIcon
-        case .trash: return NSImage(named: NSImage.trashEmptyName) ?? Theme.symbol("trash", "휴지통")
+        case .trash: return tinted("trash.fill", "휴지통", Theme.accent)
         default: return node.url.map { IconCache.shared.icon(for: $0) } ?? FolderIcon.image()
         }
     }
@@ -297,7 +322,10 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
     }
 
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-        (item as? NavNode)?.kind == .volume ? 38 : Theme.Metric.rowHeight
+        guard let node = item as? NavNode else { return Theme.Metric.rowHeight }
+        if node.kind == .volume { return 38 }
+        // 머리글 위에 간격 12 를 더 둔다.
+        return node.isSectionHeader ? Theme.Metric.rowHeight + Theme.Space.m : Theme.Metric.rowHeight
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
@@ -308,7 +336,11 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
 
     fileprivate func setHoveredRow(_ row: Int) {
         outline.enumerateAvailableRowViews { view, index in
-            (view as? ThemedRowView)?.isHovered = index == row && (outline.item(atRow: index) as? NavNode)?.kind != .header
+            let node = outline.item(atRow: index) as? NavNode
+            (view as? ThemedRowView)?.isHovered = index == row && node?.kind != .header
+            if node?.kind == .pinned, let cell = view.view(atColumn: 0) as? NSView {
+                cell.subviews.first { $0.identifier == Self.pinIdentifier }?.isHidden = index != row
+            }
         }
     }
 
@@ -415,13 +447,38 @@ final class NavOutlineView: NSOutlineView {
         return frame
     }
 
+    /// 펼침 꺾쇠는 마우스가 탐색 창 위에 있을 때만 보인다. 펼친 상태는 그대로다 (DESIGN 6장).
+    private var showsDisclosure = false {
+        didSet {
+            guard showsDisclosure != oldValue else { return }
+            enumerateAvailableRowViews { rowView, _ in
+                for view in rowView.subviews where view.identifier == NSOutlineView.disclosureButtonIdentifier {
+                    view.animator().alphaValue = showsDisclosure ? 1 : 0
+                }
+            }
+        }
+    }
+
+    override func makeView(withIdentifier identifier: NSUserInterfaceItemIdentifier, owner: Any?) -> NSView? {
+        let view = super.makeView(withIdentifier: identifier, owner: owner)
+        if identifier == NSOutlineView.disclosureButtonIdentifier { view?.alphaValue = showsDisclosure ? 1 : 0 }
+        return view
+    }
+
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
+        showsDisclosure = true
         pane?.setHoveredRow(row(at: convert(event.locationInWindow, from: nil)))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        showsDisclosure = true
     }
 
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
+        showsDisclosure = false
         pane?.setHoveredRow(-1)
     }
 
@@ -443,7 +500,8 @@ final class NavOutlineView: NSOutlineView {
 final class VolumeCellView: NSTableCellView {
     init(volume: VolumeInfo) {
         super.init(frame: .zero)
-        let image = NSImageView(image: IconCache.shared.icon(for: volume.url))
+        let symbol = Theme.symbol("internaldrive.fill", volume.name, size: 13)
+        let image = NSImageView(image: symbol.withSymbolConfiguration(.init(paletteColors: [Theme.accent])) ?? symbol)
         image.translatesAutoresizingMaskIntoConstraints = false
         image.imageScaling = .scaleProportionallyUpOrDown
         let name = UI.label(volume.name, size: Theme.Font.body)
