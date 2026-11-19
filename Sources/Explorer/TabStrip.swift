@@ -3,6 +3,8 @@ import AppKit
 /// 제목 표시줄 자리의 탭 줄 (DESIGN 4장). 탭마다 폴더 아이콘, 이름, 닫기 버튼이 있고 끝에 "+" 버튼이 있다.
 /// 활성 탭은 아래 도구 영역과 같은 색으로 이어진다. 빈 곳을 끌면 창이 움직이고 두 번 누르면 확대/축소한다.
 /// 탭은 하위 뷰 없이 직접 그리고 누른 위치로 어느 부분인지 가린다.
+/// 탭이 많으면 최소 폭까지 줄이고, 그래도 넘치면 탭 영역만 가로로 스크롤한다. "+" 버튼은 오른쪽 끝에 고정하고
+/// 활성 탭은 항상 보이게 스크롤을 맞춘다 (RD-M2).
 @MainActor
 final class TabStripView: NSView {
     struct Tab {
@@ -21,8 +23,8 @@ final class TabStripView: NSView {
     private static let plusWidth: CGFloat = 36
 
     var tabs: [Tab] = [] { didSet { tabsChanged() } }
-    var selectedIndex = 0 { didSet { needsDisplay = true; updateAccessibility() } }
-    var leadingInset: CGFloat = TabStripView.trafficLightInset { didSet { needsDisplay = true; updateToolTips() } }
+    var selectedIndex = 0 { didSet { revealSelected(); needsDisplay = true; updateAccessibility() } }
+    var leadingInset: CGFloat = TabStripView.trafficLightInset { didSet { layoutChanged() } }
 
     var onSelect: ((Int) -> Void)?
     var onClose: ((Int) -> Void)?
@@ -33,6 +35,8 @@ final class TabStripView: NSView {
     private var hovered: Part = .none { didSet { if hovered != oldValue { needsDisplay = true } } }
     private var pressed: Part = .none { didSet { if pressed != oldValue { needsDisplay = true } } }
     private var accessibilityTabs: [TabAccessibilityElement] = []
+    /// 탭이 넘칠 때 탭 영역을 왼쪽으로 민 정도.
+    private var scrollOffset: CGFloat = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -49,14 +53,27 @@ final class TabStripView: NSView {
 
     // MARK: 배치
 
+    /// 탭을 놓을 수 있는 폭. "+" 버튼 자리는 뺀다.
+    private var availableWidth: CGFloat {
+        max(0, bounds.width - leadingInset - Self.plusWidth - 16)
+    }
+
     private var tabWidth: CGFloat {
-        let available = bounds.width - leadingInset - Self.plusWidth - 16
         guard !tabs.isEmpty else { return Self.maxTabWidth }
-        return max(Self.minTabWidth, min(Self.maxTabWidth, (available / CGFloat(tabs.count)).rounded(.down)))
+        return max(Self.minTabWidth, min(Self.maxTabWidth, (availableWidth / CGFloat(tabs.count)).rounded(.down)))
+    }
+
+    private var maxScrollOffset: CGFloat {
+        max(0, CGFloat(tabs.count) * tabWidth - availableWidth)
+    }
+
+    /// 탭이 보이는 영역. 넘치는 탭은 이 밖으로 잘린다. 활성 탭 아래 양끝의 휜 부분만큼 왼쪽을 더 둔다.
+    private var tabArea: NSRect {
+        NSRect(x: leadingInset - 6, y: 0, width: availableWidth + 8, height: bounds.height)
     }
 
     private func tabRect(_ index: Int) -> NSRect {
-        NSRect(x: leadingInset + CGFloat(index) * tabWidth, y: Self.tabTop,
+        NSRect(x: leadingInset + CGFloat(index) * tabWidth - scrollOffset, y: Self.tabTop,
                width: tabWidth, height: bounds.height - Self.tabTop)
     }
 
@@ -70,12 +87,13 @@ final class TabStripView: NSView {
     }
 
     private var plusRect: NSRect {
-        let x = tabs.isEmpty ? leadingInset : tabRect(tabs.count - 1).maxX + 4
+        let x = tabs.isEmpty ? leadingInset : min(tabRect(tabs.count - 1).maxX, leadingInset + availableWidth) + 4
         return NSRect(x: x, y: Self.tabCenterFromTop - 14, width: Self.plusWidth - 4, height: 28)
     }
 
     private func part(at point: NSPoint) -> Part {
         if plusRect.contains(point) { return .plus }
+        guard tabArea.contains(point) else { return .none }
         for index in tabs.indices where tabRect(index).contains(point) {
             if showsClose(index), closeRect(index).insetBy(dx: -2, dy: -2).contains(point) { return .close(index) }
             return .tab(index)
@@ -85,21 +103,59 @@ final class TabStripView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        updateToolTips()
-        updateAccessibility()
+        layoutChanged()
     }
 
     private func tabsChanged() {
         if case .tab(let i) = hovered, i >= tabs.count { hovered = .none }
         if case .close(let i) = hovered, i >= tabs.count { hovered = .none }
+        layoutChanged()
+    }
+
+    /// 폭이나 탭 수가 바뀌었다. 스크롤을 다시 맞추고 다시 그린다.
+    private func layoutChanged() {
+        revealSelected()
         needsDisplay = true
         updateToolTips()
         updateAccessibility()
     }
 
+    /// 활성 탭이 탭 영역 안에 다 보이도록 스크롤한다.
+    private func revealSelected() {
+        var offset = min(scrollOffset, maxScrollOffset)
+        if tabs.indices.contains(selectedIndex) {
+            let start = CGFloat(selectedIndex) * tabWidth
+            if start < offset { offset = start }
+            if start + tabWidth > offset + availableWidth { offset = start + tabWidth - availableWidth }
+        }
+        setScrollOffset(offset)
+    }
+
+    private func setScrollOffset(_ offset: CGFloat) {
+        let clamped = max(0, min(maxScrollOffset, offset.rounded()))
+        guard clamped != scrollOffset else { return }
+        scrollOffset = clamped
+        needsDisplay = true
+        updateToolTips()
+        updateAccessibility()
+    }
+
+    /// 탭이 넘칠 때 휠이나 트랙패드로 탭 영역을 좌우로 민다.
+    override func scrollWheel(with event: NSEvent) {
+        guard maxScrollOffset > 0 else { return super.scrollWheel(with: event) }
+        let delta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) ? event.scrollingDeltaX : event.scrollingDeltaY
+        let step = event.hasPreciseScrollingDeltas ? delta : delta * 20
+        setScrollOffset(scrollOffset - step)
+        hovered = part(at: convert(event.locationInWindow, from: nil))
+    }
+
     private func updateToolTips() {
         removeAllToolTips()
-        for (index, tab) in tabs.enumerated() { addToolTip(tabRect(index), owner: tab.toolTip as NSString, userData: nil) }
+        let area = tabArea
+        for (index, tab) in tabs.enumerated() {
+            let rect = tabRect(index).intersection(area)
+            if !rect.isEmpty { addToolTip(rect, owner: tab.toolTip as NSString, userData: nil) }
+        }
         addToolTip(plusRect, owner: "새 탭 (⌘T)" as NSString, userData: nil)
     }
 
@@ -107,8 +163,11 @@ final class TabStripView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let active = window?.isKeyWindow ?? true
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: tabArea).addClip()
         for index in tabs.indices where index != selectedIndex { drawTab(index, active: active) }
         if tabs.indices.contains(selectedIndex) { drawTab(selectedIndex, active: active) }
+        NSGraphicsContext.restoreGraphicsState()
         drawPlus()
     }
 
@@ -260,7 +319,7 @@ final class TabStripView: NSView {
             if next.type == .leftMouseUp { break }
             let x = convert(next.locationInWindow, from: nil).x
             guard abs(x - startX) > 4 else { continue }
-            let target = Int(((x - leadingInset) / tabWidth).rounded(.down))
+            let target = Int(((x - leadingInset + scrollOffset) / tabWidth).rounded(.down))
             let clamped = max(0, min(tabs.count - 1, target))
             if clamped != current {
                 onMove?(current, clamped)

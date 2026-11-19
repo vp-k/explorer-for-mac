@@ -246,10 +246,7 @@ final class BrowserTabsController: NSViewController, NSMenuItemValidation {
             return
         }
         // 떠나는 탭의 입력 포커스를 기억해 두었다가 돌아오면 되살린다.
-        if let current = selectedBrowser, let window = view.window,
-           let responder = window.firstResponder as? NSView, responder.isDescendant(of: current.view) {
-            current.savedFirstResponder = responder
-        }
+        selectedBrowser?.saveFocus()
         selectedIndex = index
         showSelected(focus: true)
     }
@@ -261,12 +258,8 @@ final class BrowserTabsController: NSViewController, NSMenuItemValidation {
         guard let browser = selectedBrowser else { return }
         UI.pin(browser.view, to: container)
         updateWindowTitle()
-        guard focus, let window = view.window else { return }
-        if let saved = browser.savedFirstResponder, saved.window === window, window.makeFirstResponder(saved) {
-            browser.savedFirstResponder = nil
-        } else {
-            browser.fileList.focus()
-        }
+        guard focus, view.window != nil else { return }
+        browser.restoreFocus()
     }
 
     private func reloadStrip() {
@@ -313,15 +306,21 @@ final class BrowserTabsController: NSViewController, NSMenuItemValidation {
         select((selectedIndex + browsers.count - 1) % browsers.count)
     }
 
+    /// 질문 시트가 붙은 탐색기 창이 있다. 시트는 응답을 기다리는 파일 작업 큐와 이어져 있으므로
+    /// 그동안 탭을 창 사이로 옮기지 않는다. 시트의 창을 닫으면 응답할 길이 없어 큐가 멈춘다 (RD-H1).
+    private var hasPendingSheet: Bool {
+        NSApp.windows.contains { $0.browserTabs != nil && $0.attachedSheet != nil }
+    }
+
     @objc func moveTabToNewWindow(_ sender: Any?) {
-        guard browsers.count > 1, let browser = selectedBrowser, let window = view.window else { return }
+        guard browsers.count > 1, !hasPendingSheet, let browser = selectedBrowser, let window = view.window else { return }
         detach(browser)
         let frame = window.frame.offsetBy(dx: 30, dy: -30)
         AppDelegate.shared.openWindow(with: [browser], frame: frame)
     }
 
     @objc func mergeAllWindows(_ sender: Any?) {
-        guard let window = view.window else { return }
+        guard let window = view.window, !hasPendingSheet else { return }
         let others = NSApp.orderedWindows.filter { $0 !== window && $0.browserTabs?.isClosed == false }
         for other in others {
             guard let tabs = other.browserTabs else { continue }
@@ -337,10 +336,12 @@ final class BrowserTabsController: NSViewController, NSMenuItemValidation {
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
-        case #selector(selectNextTab(_:)), #selector(selectPreviousTab(_:)), #selector(moveTabToNewWindow(_:)):
+        case #selector(selectNextTab(_:)), #selector(selectPreviousTab(_:)):
             return browsers.count > 1
+        case #selector(moveTabToNewWindow(_:)):
+            return browsers.count > 1 && !hasPendingSheet
         case #selector(mergeAllWindows(_:)):
-            return NSApp.windows.contains { $0 !== view.window && $0.isVisible && $0.browserTabs?.isClosed == false }
+            return !hasPendingSheet && NSApp.windows.contains { $0 !== view.window && $0.isVisible && $0.browserTabs?.isClosed == false }
         default:
             return true
         }

@@ -80,6 +80,7 @@ final class AddressBar: NSView, NSTextFieldDelegate {
     // MARK: 경로 버튼
 
     func setLocation(crumbs: [Breadcrumb], path: String, icon: NSImage) {
+        let pathChanged = self.path != path
         self.crumbs = crumbs
         self.path = path
         iconView.image = icon
@@ -108,7 +109,8 @@ final class AddressBar: NSView, NSTextFieldDelegate {
             crumbStack.setVisibilityPriority(index == crumbs.count - 1 ? .mustHold : priority, for: button)
             crumbStack.setVisibilityPriority(index == crumbs.count - 1 ? .mustHold : priority, for: chevron)
         }
-        if isEditing { editField.stringValue = path }
+        // 위치가 그대로면 편집 중인 입력을 덮어쓰지 않는다. 탭을 다시 붙일 때도 이 함수가 불린다.
+        if isEditing, pathChanged { editField.stringValue = path }
     }
 
     @objc private func crumbClicked(_ sender: NSButton) {
@@ -200,6 +202,27 @@ final class AddressBar: NSView, NSTextFieldDelegate {
         updateColors()
         window?.makeFirstResponder(editField)
         editField.currentEditor()?.selectAll(nil)
+    }
+
+    /// 편집 중인 입력과 선택 범위. 탭을 바꿨다 돌아올 때 이어서 편집하는 데 쓴다.
+    struct Draft {
+        let text: String
+        let selection: NSRange
+    }
+
+    var draft: Draft? {
+        guard isEditing else { return nil }
+        let editor = editField.currentEditor()
+        let text = editor?.string ?? editField.stringValue
+        return Draft(text: text, selection: editor?.selectedRange ?? NSRange(location: (text as NSString).length, length: 0))
+    }
+
+    func resumeEditing(_ draft: Draft) {
+        beginEditing(text: draft.text)
+        let length = (draft.text as NSString).length
+        let location = min(draft.selection.location, length)
+        editField.currentEditor()?.selectedRange = NSRange(location: location,
+                                                           length: min(draft.selection.length, length - location))
     }
 
     private func endEditing() {

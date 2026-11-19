@@ -62,6 +62,8 @@ final class BrowserViewController: NSViewController {
     var onChromeChange: ((BrowserViewController) -> Void)?
     /// 다른 탭으로 바꿀 때의 입력 포커스. 이 탭으로 돌아오면 되살린다.
     weak var savedFirstResponder: NSView?
+    /// 다른 탭으로 바꿀 때 주소 표시줄에서 편집 중이던 입력. 돌아오면 이어서 편집한다 (RD-L1).
+    private var savedAddressDraft: AddressBar.Draft?
     private(set) var tabTitle = ""
     private(set) var tabIcon = NSImage()
     private(set) var tabToolTip = ""
@@ -204,6 +206,33 @@ final class BrowserViewController: NSViewController {
         NotificationCenter.default.removeObserver(self)
     }
 
+    // MARK: 탭 전환 포커스
+
+    /// 다른 탭으로 바꾸기 전에 입력 포커스를 기억한다.
+    func saveFocus() {
+        savedFirstResponder = nil
+        savedAddressDraft = addressBar.draft
+        guard savedAddressDraft == nil, let window = view.window else { return }
+        var responder: NSResponder? = window.firstResponder
+        // 입력 칸을 편집하는 중이면 첫 응답자는 창이 함께 쓰는 field editor 다. 그 주인인 입력 칸을 기억한다.
+        if let editor = responder as? NSTextView, editor.isFieldEditor { responder = editor.delegate as? NSResponder }
+        if let saved = responder as? NSView, saved.isDescendant(of: view) { savedFirstResponder = saved }
+    }
+
+    /// 이 탭으로 돌아왔다. 기억한 포커스를 되살리고 없으면 파일 목록에 둔다.
+    func restoreFocus() {
+        defer { savedFirstResponder = nil; savedAddressDraft = nil }
+        if let draft = savedAddressDraft {
+            addressBar.resumeEditing(draft)
+            return
+        }
+        if let saved = savedFirstResponder, let window = view.window, saved.window === window,
+           window.makeFirstResponder(saved) {
+            return
+        }
+        fileList.focus()
+    }
+
     // MARK: 이동 (N1, N2, N5)
 
     func navigate(to url: URL) {
@@ -287,6 +316,8 @@ final class BrowserViewController: NSViewController {
 
     /// 현재 폴더를 다시 읽는다. 검색 중이면 검색을 다시 한다.
     func reload(selecting: [URL]? = nil, rename: URL? = nil) {
+        // 닫은 탭에서 늦게 끝난 작업이 감시·검색을 다시 켜지 않게 한다 (RD-M1).
+        guard !isClosed else { return }
         if let query = searchQuery {
             startSearch(query)
             return
@@ -302,6 +333,7 @@ final class BrowserViewController: NSViewController {
     }
 
     private func loadCurrent(selecting: [URL], rename: URL? = nil) {
+        guard !isClosed else { return }
         watcher?.stop()
         watcher = nil
         loadGeneration += 1
@@ -382,7 +414,7 @@ final class BrowserViewController: NSViewController {
     }
 
     private func startSearch(_ query: String) {
-        guard !isThisMac else { return }
+        guard !isThisMac, !isClosed else { return }
         search?.cancel()
         watcher?.stop()
         watcher = nil
