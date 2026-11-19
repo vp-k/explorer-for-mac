@@ -163,9 +163,7 @@ final class BrowserViewController: NSViewController {
             return self != nil
         }
         navPane.onProperties = { url in PropertiesWindowController.show(for: [url]) }
-        navPane.onTrash = { [weak self] urls in
-            Task { await self?.runOperation { try FileOperations.trash(urls) } }
-        }
+        navPane.onTrash = { [weak self] urls in self?.trash(urls) }
         navPane.reloadAll()
 
         thisMacView.onOpen = { [weak self] url in self?.navigate(to: url) }

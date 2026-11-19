@@ -7,9 +7,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var controllers: [BrowserWindowController] = []
     /// 마지막 창을 닫았지만 파일 작업이 남아 종료를 미뤘다. 작업이 끝나면 종료한다.
-    private var terminateWhenIdle = false
+    private var terminateWhenIdle = false { didSet { updateProgressQuitNotice() } }
     /// Cmd+Q 에서 "끝난 뒤 종료"를 골랐다. 작업이 끝나면 창이 있어도 종료한다.
-    private var quitWhenIdle = false
+    private var quitWhenIdle = false { didSet { updateProgressQuitNotice() } }
+
+    /// 작업이 끝나면 종료한다는 것을 진행률 창에도 보인다.
+    private func updateProgressQuitNotice() {
+        FileProgressCenter.shared.quitsWhenDone = quitWhenIdle || (terminateWhenIdle && controllers.isEmpty)
+    }
 
     /// 현재 키 창의 탐색 화면.
     static var keyBrowser: BrowserViewController? {
@@ -24,10 +29,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         GlobalKeyHandler.install()
         AppState.shared.operations.onIdle = { [weak self] in self?.operationsDidFinish() }
         if controllers.isEmpty { openWindow(at: Self.startFolder() ?? Location.home) }
-        NSApp.activate()
         #if DEBUG
-        DebugSnapshot.runIfRequested()
+        // 확인용 실행은 사용자가 쓰는 앱에서 초점을 빼앗지 않는다.
+        if DebugSnapshot.isRequested || DebugProgressHarness.isRequested {
+            DebugSnapshot.runIfRequested()
+            DebugProgressHarness.runIfRequested()
+            return
+        }
         #endif
+        NSApp.activate()
     }
 
     /// `open Explorer.app --args <폴더>` 또는 실행 파일 인자로 받은 시작 폴더. 없거나 폴더가 아니면 nil.
@@ -78,6 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // terminateLater 로 기다리면 AppKit 이 MainActor 작업을 돌리지 않아 큐가 끝나지 않는다.
         // 그래서 지금은 취소하고, 큐가 비면 다시 종료한다.
         quitWhenIdle = true
+        // 무엇을 기다리는지 보이도록 진행률 창을 바로 띄운다.
+        FileProgressCenter.shared.showNow()
         return .terminateCancel
     }
 
@@ -120,7 +132,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func openWindow(with browsers: [BrowserViewController], frame: NSRect? = nil) -> BrowserWindowController {
         let controller = BrowserWindowController(browsers: browsers, frame: frame)
         controller.onClose = { [weak self, weak controller] in
-            self?.controllers.removeAll { $0 === controller }
+            guard let self else { return }
+            self.controllers.removeAll { $0 === controller }
+            // 진행률 창이 떠 있으면 마지막 탐색기 창을 닫아도 AppKit 은 마지막 창으로 보지 않는다.
+            // 그래도 작업이 끝나면 종료하도록 직접 표시한다 (R1).
+            if self.controllers.isEmpty, AppState.shared.operations.isBusy { self.terminateWhenIdle = true }
         }
         controllers.append(controller)
         controller.showWindow(nil)

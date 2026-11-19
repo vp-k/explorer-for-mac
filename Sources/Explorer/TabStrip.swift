@@ -20,11 +20,13 @@ final class TabStripView: NSView {
     private static let tabTop: CGFloat = 6
     private static let maxTabWidth: CGFloat = 240
     private static let minTabWidth: CGFloat = 72
+    /// 활성 탭은 닫기 버튼이 늘 보이므로 이름이 몇 글자 보이도록 더 넓게 둔다.
+    private static let minSelectedTabWidth: CGFloat = 128
     private static let plusWidth: CGFloat = 36
     private static let arrowWidth: CGFloat = 28
 
     var tabs: [Tab] = [] { didSet { tabsChanged() } }
-    var selectedIndex = 0 { didSet { revealSelected(); needsDisplay = true; updateAccessibility() } }
+    var selectedIndex = 0 { didSet { layoutChanged() } }
     var leadingInset: CGFloat = TabStripView.trafficLightInset { didSet { layoutChanged() } }
 
     var onSelect: ((Int) -> Void)?
@@ -61,7 +63,8 @@ final class TabStripView: NSView {
 
     /// 최소 폭으로 줄여도 탭이 다 들어가지 않는다. 이때만 좌우 화살표를 보인다.
     private var overflows: Bool {
-        CGFloat(tabs.count) * Self.minTabWidth > stripWidth
+        guard !tabs.isEmpty else { return false }
+        return CGFloat(tabs.count - 1) * Self.minTabWidth + Self.minSelectedTabWidth > stripWidth
     }
 
     /// 첫 탭이 시작하는 x. 넘치면 왼쪽 화살표 자리만큼 민다.
@@ -74,13 +77,36 @@ final class TabStripView: NSView {
         max(0, stripWidth - (overflows ? Self.arrowWidth * 2 : 0))
     }
 
+    /// 비활성 탭 폭. 모든 탭이 같은 폭이지만 활성 탭이 최소 폭보다 좁아지면 활성 탭만 넓힌다.
     private var tabWidth: CGFloat {
         guard !tabs.isEmpty else { return Self.maxTabWidth }
-        return max(Self.minTabWidth, min(Self.maxTabWidth, (availableWidth / CGFloat(tabs.count)).rounded(.down)))
+        let even = (availableWidth / CGFloat(tabs.count)).rounded(.down)
+        guard even < Self.minSelectedTabWidth, tabs.count > 1 else {
+            return max(Self.minTabWidth, min(Self.maxTabWidth, even))
+        }
+        let rest = ((availableWidth - Self.minSelectedTabWidth) / CGFloat(tabs.count - 1)).rounded(.down)
+        return max(Self.minTabWidth, min(Self.maxTabWidth, rest))
+    }
+
+    private var selectedTabWidth: CGFloat {
+        max(tabWidth, min(Self.minSelectedTabWidth, availableWidth))
+    }
+
+    private func width(of index: Int) -> CGFloat {
+        index == selectedIndex ? selectedTabWidth : tabWidth
+    }
+
+    /// 스크롤 전 탭의 왼쪽 위치. 활성 탭 뒤의 탭은 넓어진 만큼 민다.
+    private func tabStart(_ index: Int) -> CGFloat {
+        CGFloat(index) * tabWidth + (index > selectedIndex ? selectedTabWidth - tabWidth : 0)
+    }
+
+    private var totalTabsWidth: CGFloat {
+        tabs.isEmpty ? 0 : tabStart(tabs.count - 1) + width(of: tabs.count - 1)
     }
 
     private var maxScrollOffset: CGFloat {
-        max(0, CGFloat(tabs.count) * tabWidth - availableWidth)
+        max(0, totalTabsWidth - availableWidth)
     }
 
     /// 탭이 보이는 영역. 넘치는 탭은 이 밖으로 잘린다. 활성 탭 아래 양끝의 휜 부분만큼 왼쪽을 더 둔다.
@@ -89,8 +115,8 @@ final class TabStripView: NSView {
     }
 
     private func tabRect(_ index: Int) -> NSRect {
-        NSRect(x: tabsStart + CGFloat(index) * tabWidth - scrollOffset, y: Self.tabTop,
-               width: tabWidth, height: bounds.height - Self.tabTop)
+        NSRect(x: tabsStart + tabStart(index) - scrollOffset, y: Self.tabTop,
+               width: width(of: index), height: bounds.height - Self.tabTop)
     }
 
     private func closeRect(_ index: Int) -> NSRect {
@@ -153,9 +179,9 @@ final class TabStripView: NSView {
     private func revealSelected() {
         var offset = min(scrollOffset, maxScrollOffset)
         if tabs.indices.contains(selectedIndex) {
-            let start = CGFloat(selectedIndex) * tabWidth
+            let start = tabStart(selectedIndex), end = start + selectedTabWidth
             if start < offset { offset = start }
-            if start + tabWidth > offset + availableWidth { offset = start + tabWidth - availableWidth }
+            if end > offset + availableWidth { offset = end - availableWidth }
         }
         setScrollOffset(offset)
     }
@@ -357,7 +383,8 @@ final class TabStripView: NSView {
             if next.type == .leftMouseUp { break }
             let x = convert(next.locationInWindow, from: nil).x
             guard abs(x - startX) > 4 else { continue }
-            let target = Int(((x - tabsStart + scrollOffset) / tabWidth).rounded(.down))
+            let offset = x - tabsStart + scrollOffset
+            let target = tabs.indices.last { tabStart($0) <= offset } ?? 0
             let clamped = max(0, min(tabs.count - 1, target))
             if clamped != current {
                 onMove?(current, clamped)

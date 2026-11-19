@@ -118,7 +118,14 @@ extension BrowserViewController {
         guard !urls.isEmpty else { return false }
         let state = self.state
         let window = view.window
+        // 기다리는 동안에도 진행률 창에 보이도록 큐에 넣을 때 등록한다.
+        let job = FileProgressCenter.shared.track(move ? .move : .copy, sources: urls, destination: destination)
+        let ticket = job.ticket
         let outcome: Result<OperationResult, Error>? = await state.operations.run {
+            defer { job.finish() }
+            // 기다리는 중에 취소했으면 충돌을 묻지 않는다.
+            if job.isCancelled { return .failure(FileOperationError.cancelled) }
+            job.prepare()
             let scanned = await Task.detached(priority: .userInitiated) {
                 (ConflictDialog.scan(urls, to: destination), ConflictDialog.isCaseSensitive(destination))
             }.value
@@ -127,10 +134,14 @@ extension BrowserViewController {
                   !plan.sources.isEmpty else { return nil }
             let sources = plan.sources
             let resolver = plan.resolver
+            job.itemCount = sources.count
+            job.begin()
             let result = await Task.detached(priority: .userInitiated) {
                 Result {
-                    move ? try FileOperations.move(sources, to: destination, conflict: resolver.policy(for:))
-                         : try FileOperations.copy(sources, to: destination, conflict: resolver.policy(for:))
+                    let progress = ticket.makeProgress()
+                    return move
+                        ? try FileOperations.move(sources, to: destination, conflict: resolver.policy(for:), progress: progress)
+                        : try FileOperations.copy(sources, to: destination, conflict: resolver.policy(for:), progress: progress)
                 }
             }.value
             if case .success(let done) = result { state.pushUndo(done.record) }
@@ -156,12 +167,16 @@ extension BrowserViewController {
         }
         let batches = groups
         Task {
-            await runOperation {
+            // 큐에 넣는 순서와 진행률 창의 순서가 같도록 같은 차례에 등록한다.
+            let job = FileProgressCenter.shared.track(.duplicate, sources: urls)
+            let ticket = job.ticket
+            await runOperation(job: job) {
                 var records: [FileOperationRecord] = []
                 var created: [URL] = []
                 do {
                     for batch in batches {
-                        let result = try FileOperations.copy(batch.urls, to: batch.parent, conflict: .keepBoth)
+                        let result = try FileOperations.copy(batch.urls, to: batch.parent, conflict: { _ in .keepBoth },
+                                                             progress: ticket.makeProgress())
                         if let record = result.record { records.append(record) }
                         created += result.resultURLs
                     }
@@ -181,7 +196,17 @@ extension BrowserViewController {
     @objc func moveToTrash(_ sender: Any?) {
         let urls = selectedURLs
         guard !urls.isEmpty, !isThisMac else { return }
-        Task { await runOperation { try FileOperations.trash(urls) } }
+        trash(urls)
+    }
+
+    /// 휴지통으로 보낸다. 오래 걸리면 진행률 창에 보이고 취소하면 원래 자리로 되돌린다.
+    func trash(_ urls: [URL]) {
+        Task {
+            // 큐에 넣는 순서와 진행률 창의 순서가 같도록 같은 차례에 등록한다.
+            let job = FileProgressCenter.shared.track(.trash, sources: urls)
+            let ticket = job.ticket
+            await runOperation(job: job) { try FileOperations.trash(urls, progress: ticket.makeProgress()) }
+        }
     }
 
     @objc func deletePermanently(_ sender: Any?) {
@@ -374,11 +399,14 @@ extension BrowserViewController {
 
     /// Core 작업을 앱 공유 작업 큐에서 백그라운드로 돌리고 실행 취소 기록, 목록 갱신, 오류 표시를 맡는다.
     /// 창이 닫혀도 작업과 실행 취소 기록은 끝까지 처리한다.
+    /// job 이 있으면 차례가 왔을 때 진행률 창에 시작을 알리고, 끝나면 창에서 뺀다.
     @discardableResult
-    func runOperation(renameResult: Bool = false,
+    func runOperation(renameResult: Bool = false, job: ProgressJob? = nil,
                       _ work: @escaping @Sendable () throws -> OperationResult) async -> OperationResult? {
         let state = self.state
         let outcome: Result<OperationResult, Error> = await state.operations.run {
+            defer { job?.finish() }
+            job?.begin()
             let result = await Task.detached(priority: .userInitiated) { Result { try work() } }.value
             if case .success(let done) = result { state.pushUndo(done.record) }
             return result
@@ -397,7 +425,8 @@ extension BrowserViewController {
             reload(selecting: result.resultURLs, rename: renameResult ? result.resultURLs.first : nil)
             return result
         case .failure(let error):
-            presentOperationError(error)
+            // 사용자가 취소했으면 Core 가 이미 되돌렸다. 알리지 않고 목록만 다시 읽는다.
+            if error as? FileOperationError != .cancelled { presentOperationError(error) }
             state.post(AppState.filesChanged)
             reload()
             return nil

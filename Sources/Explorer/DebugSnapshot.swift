@@ -7,6 +7,8 @@ import AppKit
 /// NSView.cacheDisplay 로 창 내용을 PNG 로 남긴 뒤 종료한다. 화면 녹화 권한이 없어도 된다.
 @MainActor
 enum DebugSnapshot {
+    static var isRequested: Bool { ProcessInfo.processInfo.environment["EXPLORER_SNAPSHOT_DIR"] != nil }
+
     static func runIfRequested() {
         guard let dir = ProcessInfo.processInfo.environment["EXPLORER_SNAPSHOT_DIR"] else { return }
         let folder = URL(fileURLWithPath: dir, isDirectory: true)
