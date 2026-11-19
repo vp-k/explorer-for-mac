@@ -381,6 +381,79 @@ public enum FileOperations {
         }
     }
 
+    /// Index resolved paths and their proper ancestors once, rather than resolving every pair.
+    /// Keep this case sensitive, like contains(_:in:); String equality handles Unicode equivalence.
+    private struct PathRelationships {
+        private var paths = Set<String>()
+        private var ancestors = Set<String>()
+
+        func hasDescendant(of path: String) -> Bool { ancestors.contains(path) }
+
+        func overlaps(_ path: String) -> Bool {
+            if paths.contains(path) || ancestors.contains(path) { return true }
+            return Self.parents(of: path).contains { paths.contains($0) }
+        }
+
+        mutating func insert(_ path: String) {
+            guard paths.insert(path).inserted else { return }
+            ancestors.formUnion(Self.parents(of: path))
+        }
+
+        private static func parents(of path: String) -> [String] {
+            guard path != "/" else { return [] }
+            var result: [String] = []
+            var end = path.endIndex
+            while let slash = path[..<end].lastIndex(of: "/") {
+                if slash == path.startIndex { result.append("/"); break }
+                result.append(String(path[..<slash]))
+                end = slash
+            }
+            return result
+        }
+    }
+
+    private struct ResourceIdentity: Hashable {
+        let volume: AnyHashable
+        let item: AnyHashable
+
+        init?(_ values: URLResourceValues?) {
+            guard let values,
+                  let volume = values.volumeIdentifier as? AnyHashable,
+                  let item = values.fileResourceIdentifier as? AnyHashable else { return nil }
+            self.volume = volume
+            self.item = item
+        }
+    }
+
+    /// Results can share an inode (hard links) or a resolved path (symlinks and merged folders).
+    private struct ResultLocations {
+        private var paths = Set<String>()
+        private var identities = Set<ResourceIdentity>()
+        private var fallback: [URL] = []
+        private var items: [URL] = []
+
+        mutating func insert(_ url: URL) -> Bool {
+            let values = try? url.resourceValues(forKeys: [.volumeIdentifierKey, .fileResourceIdentifierKey, .isSymbolicLinkKey])
+            // A link's resolved path can change when a later batch item creates or moves its target.
+            if values?.isSymbolicLink == true {
+                guard !items.contains(where: { sameLocation($0, url) }) else { return false }
+                fallback.append(url)
+                items.append(url)
+                return true
+            }
+            let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+            let identity = ResourceIdentity(values)
+            let duplicate = paths.contains(path) || identity.map { identities.contains($0) } == true
+                || fallback.contains { sameLocation($0, url) }
+            guard !duplicate else { return false }
+            paths.insert(path)
+            if let identity { identities.insert(identity) }
+            else { fallback.append(url) }
+            items.append(url)
+            return true
+        }
+    }
+
     private struct TransferState {
         let sources: [URL]
         var backupExclusions: [URL]
@@ -390,14 +463,27 @@ public enum FileOperations {
         var rollback: [() throws -> Void] = []
         var names = Set<String>()
         var writtenItems: [URL] = []
+        private var reservationDirectories: [URL: (path: String, caseSensitive: Bool)] = [:]
 
         mutating func reserve(_ target: URL) -> Bool {
-            let parent = target.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
-            let caseSensitive = (try? parent.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
-                .volumeSupportsCaseSensitiveNames) == true
+            let directory = target.deletingLastPathComponent()
+            let info: (path: String, caseSensitive: Bool)
+            if let cached = reservationDirectories[directory] { info = cached }
+            else {
+                let parent = directory.standardizedFileURL.resolvingSymlinksInPath()
+                info = (parent.path, (try? parent.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+                    .volumeSupportsCaseSensitiveNames) == true)
+                reservationDirectories[directory] = info
+            }
             let name = target.lastPathComponent.precomposedStringWithCanonicalMapping
-            let path = parent.appendingPathComponent(name).path.precomposedStringWithCanonicalMapping
-            return !names.insert(caseSensitive ? path : path.lowercased()).inserted
+            let path = (info.path == "/" ? "/" + name : info.path + "/" + name).precomposedStringWithCanonicalMapping
+            return !names.insert(info.caseSensitive ? path : path.lowercased()).inserted
+        }
+
+        init(sources: [URL], backupExclusions: [URL], trashItem: @escaping (URL) throws -> URL) {
+            self.sources = sources
+            self.backupExclusions = backupExclusions
+            self.trashItem = trashItem
         }
     }
 
@@ -406,21 +492,34 @@ public enum FileOperations {
                          conflict: (URL) -> ConflictPolicy,
                          trashItem: @escaping (URL) throws -> URL = trashItemURL) throws -> OperationResult {
         try requireDirectory(destination)
+        var sameParents: [URL: Bool] = [:]
+        var sourceRelationships: PathRelationships?
         for source in sources {
             try requireItem(source)
             try rejectDescendant(destination, of: source)
             // Same-parent copies choose a fresh name; same-parent moves leave the item in place.
-            if sameLocation(source.deletingLastPathComponent(), destination) { continue }
+            let parent = source.deletingLastPathComponent()
+            let sameParent = sameParents[parent] ?? sameLocation(parent, destination)
+            sameParents[parent] = sameParent
+            if sameParent { continue }
             let target = destination.appendingPathComponent(source.lastPathComponent)
-            if isDirectoryItem(target), sources.contains(where: { !sameLocation($0, target) && contains($0, in: target) }) {
-                throw FileOperationError.destinationContainsSource(target.path)
+            if isDirectoryItem(target) {
+                if sourceRelationships == nil {
+                    var relationships = PathRelationships()
+                    for url in sources { relationships.insert(url.standardizedFileURL.resolvingSymlinksInPath().path) }
+                    sourceRelationships = relationships
+                }
+                if sourceRelationships?.hasDescendant(of: target.standardizedFileURL.resolvingSymlinksInPath().path) == true {
+                    throw FileOperationError.destinationContainsSource(target.path)
+                }
             }
         }
         var state = TransferState(sources: sources, backupExclusions: sources, trashItem: trashItem)
         var urls: [URL] = []
+        var locations = ResultLocations()
         do {
             for source in sources {
-                let sameParent = sameLocation(source.deletingLastPathComponent(), destination)
+                let sameParent = sameParents[source.deletingLastPathComponent()] == true
                 if moving && sameParent { state.skipped.append(source); continue }
                 let wholeName = hasWholeDirectoryName(source)
                 var target = destination.appendingPathComponent(source.lastPathComponent)
@@ -431,7 +530,7 @@ public enum FileOperations {
                 }
                 if let completed = try transferItem(source, to: target, moving: moving,
                                                     conflict: conflict, state: &state),
-                   !urls.contains(where: { sameLocation($0, completed) }) {
+                   locations.insert(completed) {
                     urls.append(completed)
                 }
             }
@@ -605,23 +704,21 @@ public enum FileOperations {
     private static func combinedRecord(_ records: [FileOperationRecord]) -> FileOperationRecord? {
         guard !records.isEmpty else { return nil }
         if records.count == 1 { return records[0] }
+        let allCopied = records.allSatisfy { if case .copied = $0 { return true }; return false }
+        let allMoved = records.allSatisfy { if case .moved = $0 { return true }; return false }
+        guard allCopied || allMoved else { return .compound(records: records) }
         // A directory copied first can receive more batch children through merging. Its inverse
         // must run after the child inverses; flattening these into one batch loses that ordering.
-        for (index, record) in records.enumerated() {
-            let paths = backupExclusions(for: record)
-            if records[..<index].contains(where: { earlier in
-                backupExclusions(for: earlier).contains { parent in
-                    paths.contains { contains($0, in: parent) || contains(parent, in: $0) }
-                }
-            }) { return .compound(records: records) }
+        var relationships = PathRelationships()
+        for record in records {
+            let paths = backupExclusions(for: record).map { $0.standardizedFileURL.resolvingSymlinksInPath().path }
+            if paths.contains(where: { relationships.overlaps($0) }) { return .compound(records: records) }
+            for path in paths { relationships.insert(path) }
         }
-        if records.allSatisfy({ if case .copied = $0 { return true }; return false }) {
+        if allCopied {
             return .copied(created: records.flatMap { if case .copied(let urls) = $0 { return urls }; return [] })
         }
-        if records.allSatisfy({ if case .moved = $0 { return true }; return false }) {
-            return .moved(pairs: records.flatMap { if case .moved(let pairs) = $0 { return pairs }; return [] })
-        }
-        return .compound(records: records)
+        return .moved(pairs: records.flatMap { if case .moved(let pairs) = $0 { return pairs }; return [] })
     }
 
     private static func undoCompound(_ records: [FileOperationRecord], excluding: [URL],

@@ -36,8 +36,9 @@ final class BrowserViewController: NSViewController {
     private var listedLocation: String?
     /// 화면에 아직 넣지 않은 검색 결과. 몇 묶음씩 모아서 백그라운드에서 정렬한다 (M8).
     private var pendingResults: [FileItem] = []
-    private var searchFlushScheduled = false
-    private var searchSortRunning = false
+    /// 0.3초 묶음 타이머와 백그라운드 정렬이 걸린 검색 세대. 이전 세대의 것이 새 검색을 막지 않게 세대로 구분한다 (R2).
+    private var searchFlushGeneration: Int?
+    private var searchSortGeneration: Int?
     private var didLayoutSplit = false
 
     // 화면 요소
@@ -173,8 +174,12 @@ final class BrowserViewController: NSViewController {
         updateChrome()
     }
 
+    /// 창이 닫혀 tearDown 을 마쳤다. 닫힌 창에 질문을 띄우지 않는 데 쓴다 (R3).
+    private(set) var isClosed = false
+
     /// 창이 닫힐 때 백그라운드 작업과 감시를 멈춘다.
     func tearDown() {
+        isClosed = true
         search?.cancel()
         search = nil
         watcher?.stop()
@@ -399,32 +404,39 @@ final class BrowserViewController: NSViewController {
         guard generation == loadGeneration, isSearching else { return }
         pendingResults.append(contentsOf: batch)
         statusBar.setActivity("검색 중… \(rawItems.count + pendingResults.count)개 찾음")
-        guard !searchFlushScheduled else { return }
-        searchFlushScheduled = true
+        guard searchFlushGeneration != generation else { return }
+        searchFlushGeneration = generation
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             MainActor.assumeIsolated {
-                self?.searchFlushScheduled = false
-                self?.flushSearchResults(generation: generation, finished: false)
+                guard let self else { return }
+                if self.searchFlushGeneration == generation { self.searchFlushGeneration = nil }
+                self.flushSearchResults(generation: generation, finished: false)
             }
         }
     }
 
     /// 모아 둔 결과를 합쳐 백그라운드에서 정렬하고 화면에 넣는다. 정렬 중에 온 결과는 끝난 뒤 다시 합친다.
     private func flushSearchResults(generation: Int, finished: Bool) {
-        guard generation == loadGeneration, isSearching, !searchSortRunning else { return }
+        guard generation == loadGeneration, isSearching, searchSortGeneration != generation else { return }
         guard !pendingResults.isEmpty else {
             if finished { finishSearchDisplay() }
             return
         }
         let combined = rawItems + pendingResults
         pendingResults = []
-        searchSortRunning = true
+        searchSortGeneration = generation
         let order = sortOrder
         Task { [weak self] in
             let sorted = await Task.detached(priority: .userInitiated) { FileSorter.sorted(combined, by: order) }.value
             guard let self else { return }
-            self.searchSortRunning = false
-            guard generation == self.loadGeneration, self.isSearching else { return }
+            if self.searchSortGeneration == generation { self.searchSortGeneration = nil }
+            guard generation == self.loadGeneration, self.isSearching else {
+                // 이전 세대 정렬이 끝났다. 그동안 쌓인 현재 검색 결과를 다시 내보낸다.
+                if self.isSearching {
+                    self.flushSearchResults(generation: self.loadGeneration, finished: self.search == nil)
+                }
+                return
+            }
             self.rawItems = combined
             if order == self.sortOrder {
                 self.fileList.setItems(sorted, selecting: self.fileList.selectedURLs)
@@ -442,7 +454,7 @@ final class BrowserViewController: NSViewController {
     private func searchDidFinish(generation: Int) {
         guard generation == loadGeneration, isSearching else { return }
         search = nil
-        if pendingResults.isEmpty && !searchSortRunning {
+        if pendingResults.isEmpty && searchSortGeneration != generation {
             finishSearchDisplay()
         } else {
             flushSearchResults(generation: generation, finished: true)

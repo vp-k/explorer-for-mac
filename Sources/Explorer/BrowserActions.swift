@@ -426,7 +426,7 @@ extension BrowserViewController {
             alert.messageText = "작업을 완료할 수 없습니다."
             alert.informativeText = error.localizedDescription
         }
-        if let window = view.window {
+        if let window = ConflictDialog.hostWindow(preferring: view.window) {
             alert.beginSheetModal(for: window)
         } else {
             alert.runModal()

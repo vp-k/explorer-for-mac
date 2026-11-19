@@ -196,6 +196,18 @@ enum ConflictDialog {
         return answer.policy
     }
 
+    /// 질문·오류 시트를 붙일 창. 작업을 요청한 창이 닫혔으면 다른 열린 탐색기 창을 쓴다.
+    /// 닫힌 창은 다시 띄우지 않는다. 쓸 창이 없으면 nil 이고 독립 모달 알림으로 묻는다 (R3).
+    static func hostWindow(preferring window: NSWindow?) -> NSWindow? {
+        func isOpen(_ window: NSWindow) -> Bool {
+            guard let browser = window.contentViewController as? BrowserViewController else { return false }
+            return !browser.isClosed
+        }
+        if let window, isOpen(window), window.attachedSheet == nil { return window }
+        let others = [NSApp.keyWindow, NSApp.mainWindow].compactMap { $0 } + NSApp.orderedWindows
+        return others.first { $0.isVisible && isOpen($0) && $0.attachedSheet == nil }
+    }
+
     /// 항목 하나에 대한 질문. remaining 은 이 항목을 포함한 남은 충돌 수.
     /// inProgress 면 작업이 이미 시작돼 취소할 수 없으므로 취소 대신 나머지를 건너뛴다.
     static func ask(source: URL, target: URL, remaining: Int, inProgress: Bool, destination: URL, move: Bool,
@@ -221,8 +233,8 @@ enum ConflictDialog {
         }
 
         let response: NSApplication.ModalResponse
-        if let window, window.attachedSheet == nil {
-            response = await alert.beginSheetModal(for: window)
+        if let host = hostWindow(preferring: window) {
+            response = await alert.beginSheetModal(for: host)
         } else {
             response = alert.runModal()
         }

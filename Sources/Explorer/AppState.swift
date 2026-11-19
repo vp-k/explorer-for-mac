@@ -97,17 +97,36 @@ final class AppState {
 
 /// 앞 작업이 끝나야 다음 작업을 시작하는 큐. 작업은 MainActor 에서 시작하고 무거운 일은 직접 백그라운드로 보낸다.
 /// 실행 취소처럼 앞 작업의 결과(기록 스택)에 기대는 작업도 순서가 보장된다.
+/// 실행 중이거나 기다리는 작업 수를 세어, 앱 종료가 작업을 끊지 않도록 알려 준다 (R1).
 @MainActor
 final class SerialOperationQueue {
     private var tail: Task<Void, Never>?
+    /// 실행 중이거나 차례를 기다리는 작업 수.
+    private(set) var pendingCount = 0
+    /// 마지막 작업이 끝나 큐가 비었을 때 부른다.
+    var onIdle: (() -> Void)?
+
+    var isBusy: Bool { pendingCount > 0 }
 
     func run<T: Sendable>(_ job: @escaping @MainActor () async -> T) async -> T {
         let previous = tail
+        pendingCount += 1
         let task = Task { @MainActor () -> T in
             await previous?.value
             return await job()
         }
-        tail = Task { @MainActor in _ = await task.value }
+        tail = Task { @MainActor [weak self] in
+            _ = await task.value
+            guard let self else { return }
+            self.pendingCount -= 1
+            guard self.pendingCount == 0 else { return }
+            // 작업을 기다리던 쪽의 마무리(목록 갱신 등)가 먼저 돌도록 한 번 미룬다.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if self.pendingCount == 0 { self.onIdle?() }
+                }
+            }
+        }
         return await task.value
     }
 }
