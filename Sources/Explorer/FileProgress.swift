@@ -81,6 +81,8 @@ final class ProgressJob {
     let destinationFolder: String?
     fileprivate(set) var phase = Phase.waiting
     fileprivate(set) var snapshot: OperationProgressSnapshot?
+    /// 화면에 보이는 진행 비율. 총량이 늘어 실제 비율이 줄어도 뒤로 가지 않는다.
+    fileprivate(set) var shownFraction: Double = 0
     /// 실제로 Core 작업을 시작한 시각. 0.5초 넘게 걸리는 작업만 창을 띄운다.
     fileprivate(set) var runningSince: TimeInterval?
     fileprivate var samples: [(time: TimeInterval, bytes: Int64)] = []
@@ -131,10 +133,18 @@ final class ProgressJob {
 
     fileprivate func apply(_ snapshot: OperationProgressSnapshot) {
         self.snapshot = snapshot
+        shownFraction = max(shownFraction, min(1, Self.fraction(snapshot)))
         let now = ProcessInfo.processInfo.systemUptime
         samples.append((now, snapshot.completedBytes))
         // 최근 3초로 속도를 잰다.
         while let first = samples.first, now - first.time > 3, samples.count > 2 { samples.removeFirst() }
+    }
+
+    /// 바이트로 재되, 크기가 0 인 파일만 있으면 항목 수로 잰다.
+    private static func fraction(_ snapshot: OperationProgressSnapshot) -> Double {
+        if snapshot.totalBytes > 0 { return Double(snapshot.completedBytes) / Double(snapshot.totalBytes) }
+        if snapshot.totalItems > 0 { return Double(snapshot.completedItems) / Double(snapshot.totalItems) }
+        return 0
     }
 
     /// 초당 바이트. 1초 넘게 재기 전에는 nil.
@@ -194,6 +204,9 @@ final class FileProgressCenter {
     }
 
     fileprivate func jobChanged() { refresh() }
+
+    /// 진행 중이거나 기다리는 작업이 있는지. 창 메뉴 항목을 켜고 끈다.
+    var hasJobs: Bool { !jobs.isEmpty }
 
     /// 지금 창을 띄운다. Cmd+Q 경고 뒤처럼 작업 상태를 바로 보여야 할 때 쓴다.
     func showNow() {
@@ -389,6 +402,11 @@ final class ProgressRowView: NSView {
         return button
     }()
     var showsDivider = false { didSet { needsDisplay = true } }
+    /// 막대와 남은 양 줄을 숨기면 그 자리를 비우지 않도록 바꿔 끼우는 제약.
+    private var nameBelowBar: NSLayoutConstraint!
+    private var nameBelowPercent: NSLayoutConstraint!
+    private var bottomBelowRemaining: NSLayoutConstraint!
+    private var bottomBelowName: NSLayoutConstraint!
 
     init(job: ProgressJob) {
         self.job = job
@@ -433,15 +451,19 @@ final class ProgressRowView: NSView {
 
             name.leadingAnchor.constraint(equalTo: title.leadingAnchor),
             name.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -l),
-            name.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: Theme.Space.s),
 
             remaining.leadingAnchor.constraint(equalTo: title.leadingAnchor),
             remaining.topAnchor.constraint(equalTo: name.bottomAnchor, constant: Theme.Space.xs),
             remaining.trailingAnchor.constraint(lessThanOrEqualTo: rate.leadingAnchor, constant: -Theme.Space.s),
             rate.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
             rate.firstBaselineAnchor.constraint(equalTo: remaining.firstBaselineAnchor),
-            remaining.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Theme.Space.m),
         ])
+        nameBelowBar = name.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: Theme.Space.s)
+        nameBelowPercent = name.topAnchor.constraint(equalTo: percent.bottomAnchor, constant: Theme.Space.xs)
+        bottomBelowRemaining = remaining.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Theme.Space.m)
+        bottomBelowName = name.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Theme.Space.m)
+        nameBelowBar.isActive = true
+        bottomBelowRemaining.isActive = true
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
     }
@@ -458,6 +480,17 @@ final class ProgressRowView: NSView {
 
     @objc private func cancel(_ sender: Any?) {
         job.cancel()
+    }
+
+    /// 막대와 남은 양 줄을 보일지 정한다. 숨기면 줄 높이도 그만큼 줄인다.
+    private func setLayout(bar showsBar: Bool, detail showsDetail: Bool) {
+        bar.isHidden = !showsBar
+        remaining.isHidden = !showsDetail
+        rate.isHidden = !showsDetail
+        guard nameBelowBar.isActive != showsBar || bottomBelowRemaining.isActive != showsDetail else { return }
+        NSLayoutConstraint.deactivate([nameBelowBar, nameBelowPercent, bottomBelowRemaining, bottomBelowName])
+        NSLayoutConstraint.activate([showsBar ? nameBelowBar : nameBelowPercent,
+                                     showsDetail ? bottomBelowRemaining : bottomBelowName])
     }
 
     func refresh() {
@@ -481,7 +514,7 @@ final class ProgressRowView: NSView {
         title.toolTip = header
 
         let snapshot = job.snapshot
-        let fraction = snapshot.map(Self.fraction) ?? 0
+        let fraction = job.shownFraction
         cancelButton.isEnabled = !job.isCancelled
 
         if job.isCancelled {
@@ -492,6 +525,7 @@ final class ProgressRowView: NSView {
             rate.stringValue = ""
             bar.fraction = fraction
             bar.isDimmed = true
+            setLayout(bar: started, detail: false)
             setAccessibilityLabel("\(header), \(percent.stringValue)")
             return
         }
@@ -503,6 +537,7 @@ final class ProgressRowView: NSView {
             remaining.stringValue = ""
             rate.stringValue = ""
             bar.fraction = 0
+            setLayout(bar: false, detail: false)
         case .running:
             guard let snapshot else {
                 percent.stringValue = "0% 완료"
@@ -510,8 +545,10 @@ final class ProgressRowView: NSView {
                 remaining.stringValue = ""
                 rate.stringValue = ""
                 bar.fraction = 0
+                setLayout(bar: true, detail: false)
                 break
             }
+            setLayout(bar: true, detail: true)
             percent.stringValue = "\(Int((fraction * 100).rounded(.down)))% 완료"
             bar.fraction = fraction
             name.stringValue = snapshot.currentName.isEmpty ? " " : "이름: \(snapshot.currentName)"
@@ -525,13 +562,6 @@ final class ProgressRowView: NSView {
             }
         }
         setAccessibilityLabel("\(header), \(percent.stringValue)")
-    }
-
-    /// 바이트로 재되, 크기가 0 인 파일만 있으면 항목 수로 잰다.
-    private static func fraction(_ snapshot: OperationProgressSnapshot) -> Double {
-        if snapshot.totalBytes > 0 { return Double(snapshot.completedBytes) / Double(snapshot.totalBytes) }
-        if snapshot.totalItems > 0 { return Double(snapshot.completedItems) / Double(snapshot.totalItems) }
-        return 0
     }
 
     private static let byteFormatter: ByteCountFormatter = {
@@ -584,3 +614,10 @@ final class ProgressBarView: NSView {
         NSBezierPath(roundedRect: fill, xRadius: radius, yRadius: radius).fill()
     }
 }
+
+#if DEBUG
+extension ProgressJob {
+    /// 하네스가 Core 없이 진행 값을 넣어 본다.
+    func debugApply(_ snapshot: OperationProgressSnapshot) { apply(snapshot) }
+}
+#endif

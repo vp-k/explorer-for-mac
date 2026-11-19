@@ -168,6 +168,8 @@ enum MainMenu {
         add(menu, "탭을 새 창으로 이동", #selector(NSWindow.moveTabToNewWindow(_:)))
         add(menu, "모든 창 병합", #selector(NSWindow.mergeAllWindows(_:)))
         menu.addItem(.separator())
+        add(menu, "파일 작업 진행률 보기", #selector(AppDelegate.showFileProgress(_:)), target: AppDelegate.shared)
+        menu.addItem(.separator())
         add(menu, "모두 앞으로 가져오기", #selector(NSApplication.arrangeInFront(_:)))
         return menu
     }

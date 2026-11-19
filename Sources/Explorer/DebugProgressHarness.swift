@@ -112,6 +112,9 @@ enum DebugProgressHarness {
         browser.navigate(to: work)
         await pause(0.5)
 
+        check("작업이 없으면 진행률 메뉴 꺼짐", menuEnabled == false, "\(String(describing: menuEnabled))")
+        checkMonotonicPercent()
+
         // 1. 짧은 작업은 창을 띄우지 않는다.
         var everShown = false
         let shortDone = Flag()
@@ -136,6 +139,7 @@ enum DebugProgressHarness {
         let started = ProcessInfo.processInfo.systemUptime
         let appeared = await wait(10) { center.isPanelVisible }
         let delay = ProcessInfo.processInfo.systemUptime - started
+        check("작업 중에는 진행률 메뉴 켜짐", menuEnabled == true)
         await wait(5) { (center.jobs.first?.snapshot?.completedBytes ?? 0) > 0 }
         let snapshot = center.jobs.first?.snapshot
         check("큰 복사 진행 창 표시", appeared && delay >= FileProgressCenter.showDelay,
@@ -186,6 +190,11 @@ enum DebugProgressHarness {
         await pause(0.3)
         let rows = center.panelWindow?.contentView?.subviews.compactMap { $0 as? NSStackView }.first?.arrangedSubviews.count ?? 0
         check("큐 여러 개 표시", center.jobs.count == 3 && rows == 3, "작업 \(center.jobs.count)개, 줄 \(rows)개")
+        let stackRows = center.panelWindow?.contentView?.subviews.compactMap { $0 as? NSStackView }.first?
+            .arrangedSubviews ?? []
+        let heights = stackRows.map { $0.frame.height }
+        check("대기 줄은 실행 줄보다 낮음", heights.count == 3 && heights[1] < heights[0] - 20 && heights[2] < heights[0] - 20,
+              "높이 \(heights.map { Int($0) })")
         capture(center.panelWindow, folder.appendingPathComponent("progress-queue-light.png"))
         NSApp.appearance = NSAppearance(named: .darkAqua)
         await pause(0.4)
@@ -207,6 +216,14 @@ enum DebugProgressHarness {
               "탐색기 창 \(browsersLeft)개")
         check("진행 창에 종료 예정 표시", center.quitsWhenDone)
         capture(center.panelWindow, folder.appendingPathComponent("progress-quit-light.png"))
+        // 닫은 창을 창 메뉴로 다시 띄운다. 탐색기 창이 없어도 된다.
+        center.panelWindow?.performClose(nil)
+        await pause(0.6)
+        let hidden = !center.isPanelVisible
+        if let item = menuItem { NSApp.sendAction(item.action!, to: item.target, from: item) }
+        let reopened = center.panelWindow?.frame.height ?? 0
+        check("닫은 진행 창을 메뉴로 다시 표시", hidden && center.isPanelVisible && reopened > 100,
+              "창 높이 \(Int(reopened))")
         log("summary failures=\(failures)")
         log("waiting for app to quit after last job")
         _ = await lastTask.value
@@ -217,6 +234,38 @@ enum DebugProgressHarness {
     }
 
     private final class Flag { var value = false }
+
+    private static var menuItem: NSMenuItem? {
+        func find(_ menu: NSMenu?) -> NSMenuItem? {
+            for item in menu?.items ?? [] {
+                if item.action == #selector(AppDelegate.showFileProgress(_:)) { return item }
+                if let found = find(item.submenu) { return found }
+            }
+            return nil
+        }
+        return find(NSApp.mainMenu)
+    }
+
+    private static var menuEnabled: Bool? {
+        menuItem.map { AppDelegate.shared.validateMenuItem($0) }
+    }
+
+    /// 복제처럼 배치가 늘어 총량이 커져도 표시 퍼센트가 줄지 않는지 본다. 창은 띄우지 않는다.
+    private static func checkMonotonicPercent() {
+        let job = center.track(.duplicate, sources: [URL(fileURLWithPath: "/tmp/a")])
+        func snap(_ done: Int64, _ total: Int64) -> OperationProgressSnapshot {
+            OperationProgressSnapshot(totalItems: 2, completedItems: 1, totalBytes: total, completedBytes: done, currentName: "a")
+        }
+        job.debugApply(snap(50, 100))
+        let first = job.shownFraction
+        job.debugApply(snap(100, 400))
+        let afterGrow = job.shownFraction
+        job.debugApply(snap(300, 400))
+        let later = job.shownFraction
+        job.finish()
+        check("총량이 늘어도 퍼센트 단조 증가", first == 0.5 && afterGrow == 0.5 && later == 0.75,
+              "\(first) → \(afterGrow) → \(later)")
+    }
 
     private static func capture(_ window: NSWindow?, _ url: URL) {
         guard let window, let root = window.contentView?.superview ?? window.contentView,

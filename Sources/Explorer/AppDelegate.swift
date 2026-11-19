@@ -165,6 +165,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let theme = AppState.ThemeMode(rawValue: sender.tag) { AppState.shared.theme = theme }
     }
 
+    /// 창 메뉴. 닫았던 진행률 창을 다시 띄운다.
+    @objc func showFileProgress(_ sender: Any?) {
+        FileProgressCenter.shared.showNow()
+    }
+
     @objc func newTab(_ sender: Any?) {
         if let window = NSApp.keyWindow, window.browserTabs != nil {
             openTab(in: window, at: currentFolder)
@@ -178,6 +183,9 @@ extension AppDelegate: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(setTheme(_:)) {
             menuItem.state = menuItem.tag == AppState.shared.theme.rawValue ? .on : .off
+        }
+        if menuItem.action == #selector(showFileProgress(_:)) {
+            return FileProgressCenter.shared.hasJobs
         }
         return true
     }
