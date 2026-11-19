@@ -18,7 +18,7 @@ final class AddressBar: NSView, NSTextFieldDelegate {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.cornerRadius = 5
+        layer?.cornerRadius = Theme.Radius.control
         layer?.borderWidth = 1
         setAccessibilityRole(.group)
         setAccessibilityLabel("주소 표시줄")
@@ -38,6 +38,8 @@ final class AddressBar: NSView, NSTextFieldDelegate {
         editField.isBordered = false
         editField.drawsBackground = false
         editField.focusRingType = .none
+        editField.font = .systemFont(ofSize: Theme.Font.body)
+        editField.textColor = Theme.primaryText
         editField.lineBreakMode = .byTruncatingHead
         editField.cell?.isScrollable = true
         editField.delegate = self
@@ -46,15 +48,15 @@ final class AddressBar: NSView, NSTextFieldDelegate {
         addSubview(editField)
 
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 26),
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            heightAnchor.constraint(equalToConstant: Theme.Metric.addressBoxHeight),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 16),
             iconView.heightAnchor.constraint(equalToConstant: 16),
-            crumbStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 4),
+            crumbStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6),
             crumbStack.centerYAnchor.constraint(equalTo: centerYAnchor),
             crumbStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
-            editField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6),
+            editField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
             editField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             editField.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -68,11 +70,11 @@ final class AddressBar: NSView, NSTextFieldDelegate {
         updateColors()
     }
 
+    /// 평소에는 바탕색만, 편집 중에는 강조색 테두리 (DESIGN 2장 accent: 포커스 테두리).
     private func updateColors() {
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-            layer?.borderColor = (isEditing ? NSColor.keyboardFocusIndicatorColor : NSColor.separatorColor).cgColor
-        }
+        layer?.backgroundColor = Theme.cg(Theme.fieldBackground, in: self)
+        layer?.borderColor = Theme.cg(isEditing ? Theme.accent : Theme.divider, in: self)
+        layer?.borderWidth = isEditing ? 1.5 : 1
     }
 
     // MARK: 경로 버튼
@@ -83,20 +85,21 @@ final class AddressBar: NSView, NSTextFieldDelegate {
         iconView.image = icon
         for view in crumbStack.arrangedSubviews { view.removeFromSuperview() }
         for (index, crumb) in crumbs.enumerated() {
-            let button = NSButton(title: crumb.title, target: self, action: #selector(crumbClicked(_:)))
-            button.bezelStyle = .accessoryBarAction
-            button.showsBorderOnlyWhileMouseInside = true
+            // 경로 조각. 마우스를 올리면 hoverFill (DESIGN 4장).
+            let button = ThemedButton(title: crumb.title, symbol: nil, target: self, action: #selector(crumbClicked(_:)))
+            button.horizontalPadding = 6
             button.tag = index
             button.lineBreakMode = .byTruncatingMiddle
             button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             button.toolTip = crumb.url.path
             crumbStack.addArrangedSubview(button)
 
-            let chevron = NSButton(image: UI.symbol("chevron.right", "하위 폴더"), target: self,
-                                   action: #selector(chevronClicked(_:)))
-            chevron.bezelStyle = .accessoryBarAction
-            chevron.showsBorderOnlyWhileMouseInside = true
-            chevron.imageScaling = .scaleProportionallyDown
+            // 조각 사이의 › . 누르면 하위 폴더 메뉴 (N4).
+            let chevron = ThemedButton(title: "›", symbol: nil, target: self, action: #selector(chevronClicked(_:)))
+            chevron.font = .systemFont(ofSize: 15, weight: .regular)
+            chevron.horizontalPadding = 3
+            chevron.fixedSize = NSSize(width: 18, height: 26)
+            chevron.setAccessibilityLabel("하위 폴더")
             chevron.tag = index
             chevron.toolTip = "\(crumb.title)의 하위 폴더"
             crumbStack.addArrangedSubview(chevron)
@@ -224,5 +227,73 @@ final class AddressBar: NSView, NSTextFieldDelegate {
             return true
         }
         return false
+    }
+}
+
+/// 오른쪽 둥근 검색 상자. NSSearchField 의 기본 테두리를 끄고 주소 상자와 같은 모양으로 감싼다.
+@MainActor
+final class SearchBox: NSView {
+    let field: ThemedSearchField
+    private var isFocused = false
+
+    init(field: ThemedSearchField) {
+        self.field = field
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = Theme.Radius.control
+        translatesAutoresizingMaskIntoConstraints = false
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: Theme.Font.body)
+        field.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(field)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: Theme.Metric.addressBoxHeight),
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            field.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        field.onFocusChange = { [weak self] focused in
+            self?.isFocused = focused
+            self?.updateColors()
+        }
+        updateColors()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColors()
+    }
+
+    /// 상자 어디를 눌러도 입력을 시작한다.
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(field)
+    }
+
+    private func updateColors() {
+        layer?.backgroundColor = Theme.cg(Theme.fieldBackground, in: self)
+        layer?.borderColor = Theme.cg(isFocused ? Theme.accent : Theme.divider, in: self)
+        layer?.borderWidth = isFocused ? 1.5 : 1
+    }
+}
+
+/// 입력을 시작하고 끝낼 때 알려 주는 검색 칸. 검색 상자 테두리 색에 쓴다.
+@MainActor
+final class ThemedSearchField: NSSearchField {
+    var onFocusChange: ((Bool) -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { onFocusChange?(true) }
+        return accepted
+    }
+
+    override func textDidEndEditing(_ notification: Notification) {
+        super.textDidEndEditing(notification)
+        onFocusChange?(false)
     }
 }

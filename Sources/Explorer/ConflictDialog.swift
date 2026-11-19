@@ -200,8 +200,8 @@ enum ConflictDialog {
     /// 닫힌 창은 다시 띄우지 않는다. 쓸 창이 없으면 nil 이고 독립 모달 알림으로 묻는다 (R3).
     static func hostWindow(preferring window: NSWindow?) -> NSWindow? {
         func isOpen(_ window: NSWindow) -> Bool {
-            guard let browser = window.contentViewController as? BrowserViewController else { return false }
-            return !browser.isClosed
+            guard let tabs = window.browserTabs else { return false }
+            return !tabs.isClosed
         }
         if let window, isOpen(window), window.attachedSheet == nil { return window }
         let others = [NSApp.keyWindow, NSApp.mainWindow].compactMap { $0 } + NSApp.orderedWindows

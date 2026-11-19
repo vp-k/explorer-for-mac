@@ -39,23 +39,29 @@ enum UI {
         NSImage(systemSymbolName: name, accessibilityDescription: label) ?? NSImage()
     }
 
+    /// 명령 모음의 아이콘 버튼.
     @MainActor
-    static func toolButton(_ symbolName: String, tip: String, target: AnyObject?, action: Selector) -> NSButton {
-        let button = NSButton(image: symbol(symbolName, tip), target: target, action: action)
-        button.bezelStyle = .accessoryBarAction
-        button.showsBorderOnlyWhileMouseInside = true
-        button.imagePosition = .imageOnly
-        button.toolTip = tip
-        button.setAccessibilityLabel(tip)
+    static func toolButton(_ symbolName: String, tip: String, target: AnyObject?, action: Selector) -> ThemedButton {
+        let button = ThemedButton(symbol: Theme.commandSymbol(symbolName, tip), tip: tip, target: target, action: action)
+        button.fixedSize = NSSize(width: 34, height: 30)
+        return button
+    }
+
+    /// 주소 줄의 원형 버튼 (← → ↑ ⟳).
+    @MainActor
+    static func circleButton(_ symbolName: String, tip: String, target: AnyObject?, action: Selector) -> ThemedButton {
+        let button = ThemedButton(symbol: Theme.symbol(symbolName, tip, size: 14), tip: tip, target: target, action: action)
+        button.shape = .circle
+        button.fixedSize = NSSize(width: 32, height: 32)
         return button
     }
 
     @MainActor
     static func label(_ text: String = "", size: CGFloat = NSFont.systemFontSize, bold: Bool = false,
-                      color: NSColor = .labelColor) -> NSTextField {
+                      color: NSColor? = nil) -> NSTextField {
         let field = NSTextField(labelWithString: text)
         field.font = bold ? .boldSystemFont(ofSize: size) : .systemFont(ofSize: size)
-        field.textColor = color
+        field.textColor = color ?? Theme.primaryText
         field.lineBreakMode = .byTruncatingTail
         field.translatesAutoresizingMaskIntoConstraints = false
         return field
@@ -81,7 +87,7 @@ enum UI {
     }
 }
 
-/// 시스템 파일 아이콘 캐시 (V10).
+/// 파일 아이콘 캐시 (V10). 일반 폴더는 노란 폴더(FolderIcon), 패키지·볼륨·파일은 시스템 아이콘이다.
 @MainActor
 final class IconCache {
     static let shared = IconCache()
@@ -90,13 +96,24 @@ final class IconCache {
     func icon(for url: URL) -> NSImage {
         let key = url.path
         if let image = cache[key] { return image }
-        let image = NSWorkspace.shared.icon(forFile: key)
+        let image = Self.isPlainFolder(url) ? FolderIcon.image(glyph: FolderIcon.glyph(for: url))
+            : NSWorkspace.shared.icon(forFile: key)
         if cache.count > 4000 { cache.removeAll() }
         cache[key] = image
         return image
     }
 
     func invalidate() { cache.removeAll() }
+
+    /// 패키지도 볼륨 루트도 링크도 아닌 디렉터리.
+    private static func isPlainFolder(_ url: URL) -> Bool {
+        guard url.isFileURL,
+              let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey, .isVolumeKey,
+                                                             .isSymbolicLinkKey])
+        else { return false }
+        return values.isDirectory == true && values.isPackage != true && values.isVolume != true
+            && values.isSymbolicLink != true
+    }
 }
 
 @MainActor

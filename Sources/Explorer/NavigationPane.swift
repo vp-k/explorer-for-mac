@@ -65,6 +65,7 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
 
     private let outline = NavOutlineView()
     private let scroll = NSScrollView()
+    private let background = MicaView()
     private var roots: [NavNode] = []
     private var quickAccess = NavNode(.header, title: "빠른 액세스", url: nil, children: [])
     private var thisMac = NavNode(.thisMac, title: "내 Mac", url: Location.thisMac, children: [])
@@ -78,9 +79,12 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
         outline.addTableColumn(column)
         outline.outlineTableColumn = column
         outline.headerView = nil
-        outline.style = .sourceList
+        outline.style = .plain
+        outline.backgroundColor = .clear
+        outline.selectionHighlightStyle = .regular
+        outline.intercellSpacing = NSSize(width: 0, height: 0)
         outline.floatsGroupRows = false
-        outline.indentationPerLevel = 12
+        outline.indentationPerLevel = Theme.Metric.navIndent
         outline.autoresizesOutlineColumn = true
         outline.dataSource = self
         outline.delegate = self
@@ -91,6 +95,9 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
+        scroll.contentInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
+        // 탐색 창은 반투명 재질 (DESIGN 4장).
+        UI.pin(background, to: self)
         UI.pin(scroll, to: self)
     }
 
@@ -233,55 +240,76 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let node = item as? NavNode else { return nil }
-        if node.kind == .header {
-            let cell = NSTableCellView()
-            let text = UI.label(node.title, size: NSFont.smallSystemFontSize, bold: true, color: .secondaryLabelColor)
-            cell.addSubview(text)
-            cell.textField = text
-            NSLayoutConstraint.activate([
-                text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-                text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-            return cell
-        }
         if let volume = node.volume { return VolumeCellView(volume: volume) }
         let cell = NSTableCellView()
         let image = NSImageView(image: icon(for: node))
         image.translatesAutoresizingMaskIntoConstraints = false
         image.imageScaling = .scaleProportionallyUpOrDown
-        let text = UI.label(node.title)
+        let text = UI.label(node.title, size: Theme.Font.body)
         cell.addSubview(image)
         cell.addSubview(text)
         cell.imageView = image
         cell.textField = text
+        var trailing = cell.trailingAnchor
+        if node.kind == .pinned {
+            // 빠른 액세스 고정 표시. 흐리게 (DESIGN 4장).
+            let pin = NSImageView(image: Theme.symbol("pin.fill", "고정됨", size: 10))
+            pin.translatesAutoresizingMaskIntoConstraints = false
+            pin.contentTintColor = Theme.secondaryText.withAlphaComponent(0.6)
+            cell.addSubview(pin)
+            NSLayoutConstraint.activate([
+                pin.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
+                pin.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            trailing = pin.leadingAnchor
+        }
         NSLayoutConstraint.activate([
             image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
             image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            image.widthAnchor.constraint(equalToConstant: 18),
-            image.heightAnchor.constraint(equalToConstant: 18),
-            text.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 6),
-            text.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -2),
+            image.widthAnchor.constraint(equalToConstant: 16),
+            image.heightAnchor.constraint(equalToConstant: 16),
+            text.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 8),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: trailing, constant: -4),
             text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell
     }
 
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+        let row = ThemedRowView()
+        row.showsAccentBar = true
+        return row
+    }
+
     private func icon(for node: NavNode) -> NSImage {
         switch node.kind {
-        case .home: return UI.symbol("house", "홈")
-        case .thisMac: return UI.symbol("desktopcomputer", "내 Mac")
-        case .trash: return UI.symbol("trash", "휴지통")
-        case .pinned: return node.url.map { IconCache.shared.icon(for: $0) } ?? UI.symbol("folder")
-        default: return node.url.map { IconCache.shared.icon(for: $0) } ?? UI.symbol("folder")
+        case .home: return tinted("house.fill", "홈", Theme.accent)
+        case .header: return tinted("star.fill", "빠른 액세스", Theme.accent)
+        case .thisMac: return ThisMacView.computerIcon
+        case .trash: return NSImage(named: NSImage.trashEmptyName) ?? Theme.symbol("trash", "휴지통")
+        default: return node.url.map { IconCache.shared.icon(for: $0) } ?? FolderIcon.image()
         }
     }
 
+    private func tinted(_ name: String, _ label: String, _ color: NSColor) -> NSImage {
+        let image = Theme.symbol(name, label, size: 13)
+        return image.withSymbolConfiguration(.init(paletteColors: [color])) ?? image
+    }
+
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-        (item as? NavNode)?.kind == .volume ? 42 : 24
+        (item as? NavNode)?.kind == .volume ? 38 : Theme.Metric.rowHeight
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
         (item as? NavNode)?.kind != .header
+    }
+
+    // MARK: 마우스를 올린 행
+
+    fileprivate func setHoveredRow(_ row: Int) {
+        outline.enumerateAvailableRowViews { view, index in
+            (view as? ThemedRowView)?.isHovered = index == row && (outline.item(atRow: index) as? NavNode)?.kind != .header
+        }
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
@@ -366,6 +394,37 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
 final class NavOutlineView: NSOutlineView {
     weak var pane: NavigationPane?
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas where area.owner === self && area.userInfo?["hover"] != nil { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                                       owner: self, userInfo: ["hover": true]))
+    }
+
+    /// 선택 막대가 펼침 꺾쇠와 겹치지 않도록 내용을 오른쪽으로 민다.
+    private static let leadingShift: CGFloat = 6
+
+    override func frameOfOutlineCell(atRow row: Int) -> NSRect {
+        super.frameOfOutlineCell(atRow: row).offsetBy(dx: Self.leadingShift, dy: 0)
+    }
+
+    override func frameOfCell(atColumn column: Int, row: Int) -> NSRect {
+        var frame = super.frameOfCell(atColumn: column, row: row)
+        frame.origin.x += Self.leadingShift
+        frame.size.width -= Self.leadingShift
+        return frame
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        pane?.setHoveredRow(row(at: convert(event.locationInWindow, from: nil)))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        pane?.setHoveredRow(-1)
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         pane?.menu(forRow: row(at: convert(event.locationInWindow, from: nil)))
     }
@@ -387,7 +446,7 @@ final class VolumeCellView: NSTableCellView {
         let image = NSImageView(image: IconCache.shared.icon(for: volume.url))
         image.translatesAutoresizingMaskIntoConstraints = false
         image.imageScaling = .scaleProportionallyUpOrDown
-        let name = UI.label(volume.name)
+        let name = UI.label(volume.name, size: Theme.Font.body)
         let bar = CapacityBar(volume: volume)
         for view in [image, name, bar] as [NSView] { addSubview(view) }
         imageView = image
@@ -396,39 +455,47 @@ final class VolumeCellView: NSTableCellView {
         NSLayoutConstraint.activate([
             image.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
             image.centerYAnchor.constraint(equalTo: centerYAnchor),
-            image.widthAnchor.constraint(equalToConstant: 22),
-            image.heightAnchor.constraint(equalToConstant: 22),
-            name.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 6),
+            image.widthAnchor.constraint(equalToConstant: 16),
+            image.heightAnchor.constraint(equalToConstant: 16),
+            name.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 8),
             name.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
             name.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             bar.leadingAnchor.constraint(equalTo: name.leadingAnchor),
-            bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             bar.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 3),
-            bar.heightAnchor.constraint(equalToConstant: 6),
+            bar.heightAnchor.constraint(equalToConstant: 4),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-/// 사용량 막대. 90% 이상이면 빨간색 (Windows 와 같다).
+/// 드라이브 용량 막대. accent 로 칠하고 사용률 90% 이상이면 빨간색 (DESIGN 2장 driveBar).
 @MainActor
-final class CapacityBar: NSLevelIndicator {
+final class CapacityBar: NSView {
+    private let used: Double
+
     init(volume: VolumeInfo) {
+        used = volume.totalBytes > 0
+            ? Double(volume.totalBytes - volume.availableBytes) / Double(volume.totalBytes) : 0
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        levelIndicatorStyle = .continuousCapacity
-        minValue = 0
-        maxValue = 1
-        warningValue = 0.9
-        criticalValue = 0.9
-        let used = volume.totalBytes > 0
-            ? Double(volume.totalBytes - volume.availableBytes) / Double(volume.totalBytes) : 0
-        doubleValue = used
+        setAccessibilityElement(true)
+        setAccessibilityRole(.levelIndicator)
+        setAccessibilityValue(used)
         setAccessibilityLabel(Self.caption(for: volume))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let radius = bounds.height / 2
+        Theme.divider.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
+        let fill = NSRect(x: 0, y: 0, width: max(bounds.height, bounds.width * min(max(used, 0), 1)), height: bounds.height)
+        Theme.driveBar(usedFraction: used).setFill()
+        NSBezierPath(roundedRect: fill, xRadius: radius, yRadius: radius).fill()
+    }
 
     static func caption(for volume: VolumeInfo) -> String {
         "\(SizeFormatter.humanSize(volume.totalBytes)) 중 \(SizeFormatter.humanSize(volume.availableBytes)) 사용 가능"

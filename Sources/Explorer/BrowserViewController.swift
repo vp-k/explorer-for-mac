@@ -42,20 +42,30 @@ final class BrowserViewController: NSViewController {
     private var didLayoutSplit = false
 
     // 화면 요소
-    private lazy var backButton = UI.toolButton("arrow.left", tip: "뒤로 (⌘[)", target: self, action: #selector(goBack(_:)))
-    private lazy var forwardButton = UI.toolButton("arrow.right", tip: "앞으로 (⌘])", target: self, action: #selector(goForward(_:)))
-    private lazy var upButton = UI.toolButton("arrow.up", tip: "상위 폴더 (⌥↑)", target: self, action: #selector(goUp(_:)))
-    private lazy var refreshButton = UI.toolButton("arrow.clockwise", tip: "새로 고침 (F5)", target: self, action: #selector(refresh(_:)))
+    private lazy var backButton = UI.circleButton("arrow.left", tip: "뒤로 (⌘[)", target: self, action: #selector(goBack(_:)))
+    private lazy var forwardButton = UI.circleButton("arrow.right", tip: "앞으로 (⌘])", target: self, action: #selector(goForward(_:)))
+    private lazy var upButton = UI.circleButton("arrow.up", tip: "상위 폴더 (⌥↑)", target: self, action: #selector(goUp(_:)))
+    private lazy var refreshButton = UI.circleButton("arrow.clockwise", tip: "새로 고침 (F5)", target: self, action: #selector(refresh(_:)))
     let addressBar = AddressBar()
-    let searchField = NSSearchField()
+    let searchField = ThemedSearchField()
+    private lazy var searchBox = SearchBox(field: searchField)
     private(set) lazy var commandBar = CommandBar(browser: self)
     let navPane = NavigationPane()
     let fileList = FileListController()
     let thisMacView = ThisMacView()
     let previewPane = PreviewPane()
     let statusBar = StatusBar()
-    private let splitView = NSSplitView()
-    private let centerContainer = NSView()
+    private let splitView = ThemedSplitView()
+    private let centerContainer = FillView(Theme.contentBackground)
+
+    /// 탭 이름·아이콘·창 제목이 바뀌었다. 탭 관리자가 탭 줄을 다시 그린다.
+    var onChromeChange: ((BrowserViewController) -> Void)?
+    /// 다른 탭으로 바꿀 때의 입력 포커스. 이 탭으로 돌아오면 되살린다.
+    weak var savedFirstResponder: NSView?
+    private(set) var tabTitle = ""
+    private(set) var tabIcon = NSImage()
+    private(set) var tabToolTip = ""
+    private(set) var windowTitle = ""
 
     init(url: URL) {
         history = NavigationHistory(start: Location.isThisMac(url) ? url : url.standardizedFileURL)
@@ -81,12 +91,21 @@ final class BrowserViewController: NSViewController {
         searchField.action = #selector(searchFieldChanged(_:))
         searchField.setAccessibilityLabel("검색 상자")
 
-        let top = NSStackView(views: [navButtons, addressBar, searchField])
-        top.orientation = .horizontal
-        top.spacing = 8
-        top.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+        // 주소 줄: ← → ↑ ⟳ 원형 버튼, 둥근 주소 상자, 오른쪽 둥근 검색 상자 (DESIGN 1장).
+        let top = FillView(Theme.toolbarBackground)
+        let topStack = NSStackView(views: [navButtons, addressBar, searchBox])
+        topStack.orientation = .horizontal
+        topStack.spacing = 8
+        topStack.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 10)
+        UI.pin(topStack, to: top)
         addressBar.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        searchField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        let searchWidth = searchBox.widthAnchor.constraint(equalTo: top.widthAnchor, multiplier: 0.24)
+        searchWidth.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            searchWidth,
+            searchBox.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
+            searchBox.widthAnchor.constraint(lessThanOrEqualToConstant: 320),
+        ])
 
         splitView.isVertical = true
         splitView.dividerStyle = .thin
@@ -106,12 +125,8 @@ final class BrowserViewController: NSViewController {
         UI.pin(thisMacView, to: centerContainer)
         thisMacView.isHidden = true
 
-        let sep1 = NSBox(), sep2 = NSBox()
-        sep1.boxType = .separator
-        sep2.boxType = .separator
-
         var previousBottom = view.topAnchor
-        for subview in [top, commandBar, sep1, splitView, sep2, statusBar] as [NSView] {
+        for subview in [top, commandBar, splitView, statusBar] as [NSView] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(subview)
             NSLayoutConstraint.activate([
@@ -122,9 +137,9 @@ final class BrowserViewController: NSViewController {
             previousBottom = subview.bottomAnchor
         }
         NSLayoutConstraint.activate([
-            top.heightAnchor.constraint(equalToConstant: 38),
-            commandBar.heightAnchor.constraint(equalToConstant: 34),
-            statusBar.heightAnchor.constraint(equalToConstant: 24),
+            top.heightAnchor.constraint(equalToConstant: Theme.Metric.addressRowHeight),
+            commandBar.heightAnchor.constraint(equalToConstant: Theme.Metric.commandBarHeight),
+            statusBar.heightAnchor.constraint(equalToConstant: Theme.Metric.statusBarHeight),
             statusBar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
     }
@@ -495,20 +510,23 @@ final class BrowserViewController: NSViewController {
         let title: String
         if isThisMac {
             title = "내 Mac"
+            tabIcon = ThisMacView.computerIcon
+            tabToolTip = "내 Mac"
             addressBar.setLocation(crumbs: [Breadcrumb(title: "내 Mac", url: Location.thisMac)],
-                                   path: "내 Mac", icon: UI.symbol("desktopcomputer"))
-            view.window?.representedURL = nil
+                                   path: "내 Mac", icon: tabIcon)
         } else {
             let crumbs = AddressResolver.breadcrumbs(for: currentURL)
             title = crumbs.last?.title ?? currentURL.lastPathComponent
-            addressBar.setLocation(crumbs: crumbs, path: AddressResolver.displayPath(for: currentURL),
-                                   icon: IconCache.shared.icon(for: currentURL))
-            view.window?.representedURL = currentURL
+            tabIcon = IconCache.shared.icon(for: currentURL)
+            tabToolTip = AddressResolver.displayPath(for: currentURL)
+            addressBar.setLocation(crumbs: crumbs, path: AddressResolver.displayPath(for: currentURL), icon: tabIcon)
         }
         searchField.placeholderString = isThisMac ? "검색" : "\(title) 검색"
-        view.window?.title = isSearching ? "검색 결과 - \(title)" : title
+        windowTitle = isSearching ? "검색 결과 - \(title)" : title
+        tabTitle = windowTitle
         navPane.select(url: currentURL)
         updateCommandState()
+        onChromeChange?(self)
     }
 
     func updateStatus() {

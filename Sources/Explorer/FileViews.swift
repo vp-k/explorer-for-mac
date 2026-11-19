@@ -5,6 +5,39 @@ import ExplorerCore
 @MainActor
 final class FileTableView: NSTableView {
     weak var listController: FileListController?
+    /// 마우스를 올린 행. 없으면 -1.
+    private(set) var hoveredRow = -1
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas where area.owner === self && area.userInfo?["hover"] != nil { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                                       owner: self, userInfo: ["hover": true]))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        setHoveredRow(row(at: convert(event.locationInWindow, from: nil)))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        setHoveredRow(-1)
+    }
+
+    /// 스크롤하면 마우스 아래 행이 바뀐다.
+    override func scrollWheel(with event: NSEvent) {
+        super.scrollWheel(with: event)
+        guard let window else { return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        setHoveredRow(visibleRect.contains(point) ? row(at: point) : -1)
+    }
+
+    private func setHoveredRow(_ row: Int) {
+        guard row != hoveredRow else { return }
+        hoveredRow = row
+        enumerateAvailableRowViews { view, index in (view as? ThemedRowView)?.isHovered = index == row }
+    }
 
     override func keyDown(with event: NSEvent) {
         if listController?.handleKey(event) == true { return }
@@ -84,7 +117,7 @@ final class FileIconItem: NSCollectionViewItem {
 
     static func itemSize(for mode: ViewMode) -> NSSize {
         switch mode {
-        case .list: return NSSize(width: 240, height: 22)
+        case .list: return NSSize(width: 240, height: Theme.Metric.rowHeight)
         case .mediumIcons, .details: return NSSize(width: 104, height: 100)
         case .largeIcons: return NSSize(width: 150, height: 160)
         }
@@ -101,10 +134,12 @@ final class FileIconItem: NSCollectionViewItem {
     override func loadView() {
         let container = FileIconCellView()
         container.wantsLayer = true
-        container.layer?.cornerRadius = 4
+        container.layer?.cornerRadius = Theme.Radius.selection
         let image = NSImageView()
         image.imageScaling = .scaleProportionallyUpOrDown
         let text = NSTextField(labelWithString: "")
+        text.font = .systemFont(ofSize: Theme.Font.body)
+        text.textColor = Theme.primaryText
         text.lineBreakMode = .byTruncatingTail
         container.addSubview(image)
         container.addSubview(text)
@@ -112,6 +147,11 @@ final class FileIconItem: NSCollectionViewItem {
         imageView = image
         textField = text
         view = container
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        isHovered = false
     }
 
     func configure(name: String, icon: NSImage, mode: ViewMode, alpha: CGFloat) {
@@ -143,18 +183,27 @@ final class FileIconItem: NSCollectionViewItem {
             image.frame = NSRect(x: 4, y: (bounds.height - side) / 2, width: side, height: side)
             text.frame = NSRect(x: side + 8, y: (bounds.height - 17) / 2, width: bounds.width - side - 12, height: 17)
         } else {
-            let top = bounds.height - side - 6
+            let top = bounds.height - side - 8
             image.frame = NSRect(x: (bounds.width - side) / 2, y: top, width: side, height: side)
-            text.frame = NSRect(x: 4, y: 2, width: bounds.width - 8, height: max(top - 4, 17))
+            text.frame = NSRect(x: 6, y: 4, width: bounds.width - 12, height: max(top - 6, 17))
         }
     }
 
     override var isSelected: Bool { didSet { updateHighlight() } }
     override var highlightState: NSCollectionViewItem.HighlightState { didSet { updateHighlight() } }
+    var isHovered = false { didSet { if isHovered != oldValue { updateHighlight() } } }
 
-    private func updateHighlight() {
-        let on = isSelected || highlightState == .forSelection
-        view.layer?.backgroundColor = on ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.3).cgColor : nil
+    /// 카드 hover 와 선택 하이라이트 (DESIGN 4장 아이콘 보기). 창이 비활성이면 선택은 회색.
+    func updateHighlight() {
+        let selected = isSelected || highlightState == .forSelection
+        let color: NSColor?
+        if selected {
+            let active = view.window?.isKeyWindow ?? true
+            color = !active ? Theme.inactiveSelectionFill : (isHovered ? Theme.selectionHoverFill : Theme.selectionFill)
+        } else {
+            color = isHovered ? Theme.hoverFill : nil
+        }
+        view.layer?.backgroundColor = color.map { Theme.cg($0, in: view) }
     }
 }
 
@@ -165,6 +214,34 @@ final class FileIconCellView: NSView {
         super.layout()
         owner?.layoutSubviews(in: bounds)
     }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas where area.owner === self { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) { owner?.isHovered = true }
+    override func mouseExited(with event: NSEvent) { owner?.isHovered = false }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        owner?.updateHighlight()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let center = NotificationCenter.default
+        center.removeObserver(self)
+        guard let window else { return }
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            center.addObserver(self, selector: #selector(windowKeyChanged(_:)), name: name, object: window)
+        }
+        owner?.updateHighlight()
+    }
+
+    @objc private func windowKeyChanged(_ note: Notification) { owner?.updateHighlight() }
 }
 
 /// F3 인라인 이름 바꾸기. 확장자를 뺀 부분만 선택하고 Enter 로 확정, Esc 로 취소한다.
@@ -199,7 +276,7 @@ final class RenameEditor: NSObject, NSTextFieldDelegate {
         field.isEditable = true
         field.isSelectable = true
         field.drawsBackground = true
-        field.backgroundColor = .textBackgroundColor
+        field.backgroundColor = Theme.contentBackground
         field.isBezeled = false
         field.focusRingType = .exterior
         field.delegate = self
@@ -240,5 +317,61 @@ final class RenameEditor: NSObject, NSTextFieldDelegate {
         let handler = onCommit
         // 편집이 끝난 뒤 목록을 다시 읽도록 한 박자 늦춘다.
         DispatchQueue.main.async { handler?(newName) }
+    }
+}
+
+/// 얇은 열 머리글: 바탕은 목록과 같고 열 사이와 아래에 구분선만 둔다 (DESIGN 4장).
+@MainActor
+final class ThemedHeaderView: NSTableHeaderView {
+    override func draw(_ dirtyRect: NSRect) {
+        Theme.contentBackground.setFill()
+        bounds.fill()
+        super.draw(dirtyRect)
+        Theme.divider.setFill()
+        NSRect(x: 0, y: isFlipped ? bounds.maxY - 1 : 0, width: bounds.width, height: 1).fill()
+    }
+}
+
+@MainActor
+final class ThemedHeaderCell: NSTableHeaderCell {
+    override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
+        Theme.contentBackground.setFill()
+        cellFrame.fill()
+        Theme.divider.setFill()
+        NSRect(x: cellFrame.maxX - 1, y: cellFrame.minY + 6, width: 1, height: cellFrame.height - 12).fill()
+        drawInterior(withFrame: cellFrame, in: controlView)
+    }
+
+    override func highlight(_ flag: Bool, withFrame cellFrame: NSRect, in controlView: NSView) {
+        draw(withFrame: cellFrame, in: controlView)
+    }
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        style.alignment = alignment
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: Theme.Font.secondary),
+            .foregroundColor: Theme.secondaryText, .paragraphStyle: style,
+        ]
+        let titleRect = alignment == .right
+            ? NSRect(x: cellFrame.minX + 24, y: cellFrame.midY - 8, width: cellFrame.width - 38, height: 16)
+            : NSRect(x: cellFrame.minX + 10, y: cellFrame.midY - 8, width: cellFrame.width - 34, height: 16)
+        (stringValue as NSString).draw(with: titleRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                                       attributes: attributes)
+        guard let table = (controlView as? NSTableHeaderView)?.tableView,
+              let column = table.tableColumns.first(where: { $0.headerCell === self }),
+              let key = column.sortDescriptorPrototype?.key,
+              let descriptor = table.sortDescriptors.first, descriptor.key == key else { return }
+        // 정렬 중인 열: 작은 꺾쇠.
+        let name = descriptor.ascending ? "chevron.up" : "chevron.down"
+        let config = NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold)
+            .applying(.init(paletteColors: [Theme.secondaryText]))
+        guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(config) else { return }
+        let size = image.size
+        let x = alignment == .right ? cellFrame.minX + 8 : cellFrame.maxX - size.width - 10
+        image.draw(in: NSRect(x: x, y: cellFrame.midY - size.height / 2, width: size.width, height: size.height),
+                   from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
     }
 }

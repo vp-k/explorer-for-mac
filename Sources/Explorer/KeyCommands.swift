@@ -47,12 +47,14 @@ enum GlobalKeyHandler {
 
         // Ctrl+Tab / Ctrl+Shift+Tab: 탭 전환
         if event.keyCode == Key.tab, flags.contains(.control), !flags.contains(.command) {
-            if flags.contains(.shift) { window?.selectPreviousTab(nil) } else { window?.selectNextTab(nil) }
+            if let tabs = window?.browserTabs {
+                if flags.contains(.shift) { tabs.selectPreviousTab(nil) } else { tabs.selectNextTab(nil) }
+            }
             return nil
         }
 
         let editing = isEditingText(in: window)
-        let browser = window?.contentViewController as? BrowserViewController
+        let browser = window?.activeBrowser
 
         // 글자 입력 중의 커서·지우기 키는 메뉴 단축키(Cmd+↑ 상위, Cmd+⌫ 휴지통, F2 이름 바꾸기)로 새지 않게
         // 입력 칸으로 바로 보낸다.

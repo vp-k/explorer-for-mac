@@ -124,7 +124,6 @@ enum MainMenu {
         add(menu, "새로 고침", #selector(B.refresh(_:)), "r")
         add(menu, "주소 표시줄로 이동", #selector(B.focusAddressBar(_:)), "l")
         menu.addItem(.separator())
-        add(menu, "탭 막대 보기", #selector(NSWindow.toggleTabBar(_:)))
         add(menu, "전체 화면", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control])
         return menu
     }

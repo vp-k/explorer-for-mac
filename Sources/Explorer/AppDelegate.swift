@@ -13,16 +13,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 현재 키 창의 탐색 화면.
     static var keyBrowser: BrowserViewController? {
-        (NSApp.keyWindow ?? NSApp.mainWindow)?.contentViewController as? BrowserViewController
+        (NSApp.keyWindow ?? NSApp.mainWindow)?.activeBrowser
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSWindow.allowsAutomaticWindowTabbing = true
+        // 탭은 자체 탭 줄로 만든다. macOS 창 탭은 끈다.
+        NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.mainMenu = MainMenu.build()
         GlobalKeyHandler.install()
         AppState.shared.operations.onIdle = { [weak self] in self?.operationsDidFinish() }
         if controllers.isEmpty { openWindow(at: Self.startFolder() ?? Location.home) }
         NSApp.activate()
+        DebugSnapshot.runIfRequested()
     }
 
     /// `open Explorer.app --args <폴더>` 또는 실행 파일 인자로 받은 시작 폴더. 없거나 폴더가 아니면 nil.
@@ -95,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             let folder = (try? FileItem.load(url))?.isNavigable == true ? url : url.deletingLastPathComponent()
-            if let window = NSApp.keyWindow, window.contentViewController is BrowserViewController {
+            if let window = NSApp.keyWindow, window.browserTabs != nil {
                 openTab(in: window, at: folder)
             } else {
                 openWindow(at: folder)
@@ -107,26 +109,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @discardableResult
     func openWindow(at url: URL) -> BrowserWindowController {
-        let controller = makeController(at: url)
-        controller.showWindow(nil)
-        controller.ensureTabBarVisible()
-        return controller
+        openWindow(with: [BrowserViewController(url: url)])
     }
 
-    func openTab(in window: NSWindow, at url: URL) {
-        let controller = makeController(at: url)
-        guard let newWindow = controller.window else { return }
-        window.addTabbedWindow(newWindow, ordered: .above)
-        newWindow.makeKeyAndOrderFront(nil)
-    }
-
-    private func makeController(at url: URL) -> BrowserWindowController {
-        let controller = BrowserWindowController(url: url)
+    /// 다른 창에서 떼어 온 탭으로 새 창을 연다.
+    @discardableResult
+    func openWindow(with browsers: [BrowserViewController], frame: NSRect? = nil) -> BrowserWindowController {
+        let controller = BrowserWindowController(browsers: browsers, frame: frame)
         controller.onClose = { [weak self, weak controller] in
             self?.controllers.removeAll { $0 === controller }
         }
         controllers.append(controller)
+        controller.showWindow(nil)
         return controller
+    }
+
+    /// 창의 현재 탭 바로 뒤에 새 탭을 열고 고른다. 탐색기 창이 아니면 새 창을 연다.
+    func openTab(in window: NSWindow?, at url: URL) {
+        guard let window, let tabs = window.browserTabs, !tabs.isClosed else {
+            openWindow(at: url)
+            return
+        }
+        tabs.addTab(BrowserViewController(url: url), after: tabs.selectedIndex)
+        window.makeKeyAndOrderFront(nil)
     }
 
     private var currentFolder: URL {
@@ -138,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func newTab(_ sender: Any?) {
-        if let window = NSApp.keyWindow, window.contentViewController is BrowserViewController {
+        if let window = NSApp.keyWindow, window.browserTabs != nil {
             openTab(in: window, at: currentFolder)
         } else {
             openWindow(at: currentFolder)

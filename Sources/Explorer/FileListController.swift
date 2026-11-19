@@ -24,7 +24,8 @@ final class FileListController: NSObject {
     let collectionView = FileCollectionView()
     private let tableScroll = NSScrollView()
     private let collectionScroll = NSScrollView()
-    private let messageLabel = UI.label("", color: .secondaryLabelColor)
+    /// 빈 폴더·오류 안내.
+    let messageLabel = UI.label("", color: Theme.secondaryText)
 
     private(set) var items: [FileItem] = []
     var mode: ViewMode = .details { didSet { if oldValue != mode { applyMode(from: oldValue) } } }
@@ -56,9 +57,10 @@ final class FileListController: NSObject {
         UI.pin(collectionScroll, to: containerView)
         containerView.addSubview(messageLabel)
         messageLabel.alignment = .center
+        // 빈 폴더 안내는 가운데 (DESIGN 4장).
         NSLayoutConstraint.activate([
             messageLabel.centerXAnchor.constraint(equalTo: containerView.centerXAnchor),
-            messageLabel.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 60),
+            messageLabel.centerYAnchor.constraint(equalTo: containerView.centerYAnchor, constant: -20),
             messageLabel.widthAnchor.constraint(lessThanOrEqualTo: containerView.widthAnchor, constant: -40),
         ])
         messageLabel.isHidden = true
@@ -69,9 +71,12 @@ final class FileListController: NSObject {
 
     private func setUpTable() {
         tableView.listController = self
-        tableView.style = .fullWidth
-        tableView.rowHeight = 22
-        tableView.intercellSpacing = NSSize(width: 6, height: 2)
+        tableView.style = .plain
+        tableView.rowHeight = Theme.Metric.rowHeight
+        tableView.intercellSpacing = NSSize(width: 0, height: 0)
+        tableView.backgroundColor = Theme.contentBackground
+        tableView.gridStyleMask = []
+        tableView.headerView = ThemedHeaderView(frame: NSRect(x: 0, y: 0, width: 0, height: 28))
         tableView.allowsMultipleSelection = true
         tableView.allowsEmptySelection = true
         tableView.allowsColumnReordering = true
@@ -101,6 +106,8 @@ final class FileListController: NSObject {
         tableScroll.hasVerticalScroller = true
         tableScroll.hasHorizontalScroller = true
         tableScroll.autohidesScrollers = true
+        tableScroll.backgroundColor = Theme.contentBackground
+        tableScroll.borderType = .noBorder
     }
 
     private func addColumn(_ id: NSUserInterfaceItemIdentifier, _ title: String, width: CGFloat, sortKey: SortKey?) {
@@ -108,6 +115,7 @@ final class FileListController: NSObject {
         column.title = title
         column.width = width
         column.minWidth = 50
+        column.headerCell = ThemedHeaderCell(textCell: title)
         if let sortKey {
             column.sortDescriptorPrototype = NSSortDescriptor(key: sortKey.rawValue, ascending: true)
         }
@@ -124,7 +132,7 @@ final class FileListController: NSObject {
         collectionView.isSelectable = true
         collectionView.allowsMultipleSelection = true
         collectionView.allowsEmptySelection = true
-        collectionView.backgroundColors = [.textBackgroundColor]
+        collectionView.backgroundColors = [Theme.contentBackground]
         collectionView.registerForDraggedTypes([.fileURL])
         collectionView.setDraggingSourceOperationMask(.every, forLocal: true)
         collectionView.setDraggingSourceOperationMask([.copy, .move, .generic, .link], forLocal: false)
@@ -133,6 +141,8 @@ final class FileListController: NSObject {
         collectionScroll.documentView = collectionView
         collectionScroll.hasVerticalScroller = true
         collectionScroll.autohidesScrollers = true
+        collectionScroll.backgroundColor = Theme.contentBackground
+        collectionScroll.borderType = .noBorder
     }
 
     /// 보기를 바꾼다. 선택은 바꾸기 전 보기(previous)에서 읽어 새 보기로 옮긴다 (M4).
@@ -144,8 +154,8 @@ final class FileListController: NSObject {
         collectionScroll.isHidden = mode == .details
         if let layout = collectionView.collectionViewLayout as? NSCollectionViewFlowLayout {
             layout.itemSize = FileIconItem.itemSize(for: mode)
-            layout.minimumInteritemSpacing = mode == .list ? 0 : 6
-            layout.minimumLineSpacing = mode == .list ? 0 : 6
+            layout.minimumInteritemSpacing = mode == .list ? 0 : 4
+            layout.minimumLineSpacing = mode == .list ? 0 : 4
             layout.sectionInset = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
             layout.invalidateLayout()
         }
@@ -380,28 +390,38 @@ extension FileListController: NSTableViewDataSource, NSTableViewDelegate {
         cell.textField = text
         var leading = cell.leadingAnchor
         if id == Column.name {
+            text.font = .systemFont(ofSize: Theme.Font.body)
+            text.textColor = Theme.primaryText
             let image = NSImageView()
             image.translatesAutoresizingMaskIntoConstraints = false
             image.imageScaling = .scaleProportionallyUpOrDown
             cell.addSubview(image)
             cell.imageView = image
             NSLayoutConstraint.activate([
-                image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+                image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12),
                 image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
                 image.widthAnchor.constraint(equalToConstant: 16),
                 image.heightAnchor.constraint(equalToConstant: 16),
             ])
             leading = image.trailingAnchor
         } else {
-            text.textColor = .secondaryLabelColor
+            // 날짜·유형·크기·폴더는 secondaryText (DESIGN 4장).
+            text.font = .systemFont(ofSize: Theme.Font.secondary)
+            text.textColor = Theme.secondaryText
         }
         if id == Column.size { text.alignment = .right }
         NSLayoutConstraint.activate([
-            text.leadingAnchor.constraint(equalTo: leading, constant: 4),
-            text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
+            text.leadingAnchor.constraint(equalTo: leading, constant: id == Column.name ? 8 : 10),
+            text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: id == Column.size ? -14 : -4),
             text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let view = ThemedRowView()
+        view.isHovered = row == self.tableView.hoveredRow
+        return view
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {

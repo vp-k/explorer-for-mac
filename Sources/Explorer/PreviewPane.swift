@@ -4,13 +4,13 @@ import Quartz
 
 /// V7 미리 보기 창 (QuickLook).
 @MainActor
-final class PreviewPane: NSView {
+final class PreviewPane: FillView {
     private let previewView: QLPreviewView = QLPreviewView(frame: .zero, style: .normal)
-    private let placeholder = UI.label("미리 볼 파일을 선택하세요.", color: .secondaryLabelColor)
+    private let placeholder = UI.label("미리 볼 파일을 선택하세요.", color: Theme.secondaryText)
     private var currentURL: URL?
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
+    init() {
+        super.init(Theme.contentBackground)
         UI.pin(previewView, to: self)
         previewView.autostarts = true
         placeholder.alignment = .center

@@ -1,10 +1,11 @@
 import AppKit
 
-/// 명령 모음: 새로 만들기, 잘라내기·복사·붙여넣기·이름 바꾸기·삭제, 정렬, 보기, 더 보기.
+/// 명령 모음: "새로 만들기" 강조 버튼, 잘라내기·복사·붙여넣기·이름 바꾸기·삭제 아이콘 묶음, 구분선,
+/// "정렬 ▾" "보기 ▾" "···" 순서 (DESIGN 1장).
 @MainActor
-final class CommandBar: NSView {
+final class CommandBar: FillView {
     private weak var browser: BrowserViewController?
-    private var newButton: NSButton!
+    private var newButton: ThemedButton!
     private var cutButton: NSButton!
     private var copyButton: NSButton!
     private var pasteButton: NSButton!
@@ -13,24 +14,32 @@ final class CommandBar: NSView {
 
     init(browser: BrowserViewController) {
         self.browser = browser
-        super.init(frame: .zero)
+        super.init(Theme.toolbarBackground)
+        bottomDivider = true
         typealias B = BrowserViewController
 
-        newButton = textButton("새로 만들기", symbol: "plus.circle", action: #selector(showNewMenu(_:)), target: self)
+        newButton = ThemedButton(title: "새로 만들기", symbol: Theme.symbol("plus", "새로 만들기", size: 12, weight: .semibold),
+                                 target: self, action: #selector(showNewMenu(_:)))
+        newButton.isAccent = true
+        newButton.showsMenuIndicator = true
+        newButton.horizontalPadding = 12
+        newButton.font = .systemFont(ofSize: Theme.Font.body, weight: .medium)
         cutButton = UI.toolButton("scissors", tip: "잘라내기 (⌘X)", target: browser, action: #selector(B.cut(_:)))
         copyButton = UI.toolButton("doc.on.doc", tip: "복사 (⌘C)", target: browser, action: #selector(B.copy(_:)))
         pasteButton = UI.toolButton("doc.on.clipboard", tip: "붙여넣기 (⌘V)", target: browser, action: #selector(B.paste(_:)))
-        renameButton = UI.toolButton("pencil", tip: "이름 바꾸기 (F2)", target: browser, action: #selector(B.renameSelection(_:)))
+        renameButton = UI.toolButton("character.cursor.ibeam", tip: "이름 바꾸기 (F2)", target: browser,
+                                     action: #selector(B.renameSelection(_:)))
         deleteButton = UI.toolButton("trash", tip: "삭제 (Delete)", target: browser, action: #selector(B.moveToTrash(_:)))
-        let sortButton = textButton("정렬", symbol: "arrow.up.arrow.down", action: #selector(showSortMenu(_:)), target: self)
-        let viewButton = textButton("보기", symbol: "rectangle.grid.1x2", action: #selector(showViewMenu(_:)), target: self)
+        let sortButton = textButton("정렬", symbol: "arrow.up.arrow.down", action: #selector(showSortMenu(_:)))
+        let viewButton = textButton("보기", symbol: "rectangle.grid.1x2", action: #selector(showViewMenu(_:)))
         let moreButton = UI.toolButton("ellipsis", tip: "자세히 보기", target: self, action: #selector(showMoreMenu(_:)))
 
         let stack = NSStackView(views: [newButton, separator(), cutButton, copyButton, pasteButton, renameButton,
                                         deleteButton, separator(), sortButton, viewButton, separator(), moreButton])
         stack.orientation = .horizontal
-        stack.spacing = 4
-        stack.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
+        stack.spacing = 2
+        stack.setCustomSpacing(10, after: newButton)
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -42,21 +51,27 @@ final class CommandBar: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    private func textButton(_ title: String, symbol: String, action: Selector, target: AnyObject) -> NSButton {
-        let button = NSButton(title: title, image: UI.symbol(symbol, title), target: target, action: action)
-        button.bezelStyle = .accessoryBarAction
-        button.showsBorderOnlyWhileMouseInside = true
-        button.imagePosition = .imageLeading
+    private func textButton(_ title: String, symbol: String, action: Selector) -> ThemedButton {
+        let button = ThemedButton(title: title, symbol: Theme.commandSymbol(symbol, title), target: self, action: action)
+        button.showsMenuIndicator = true
         return button
     }
 
     private func separator() -> NSView {
-        let box = NSBox()
-        box.boxType = .separator
-        box.translatesAutoresizingMaskIntoConstraints = false
-        box.heightAnchor.constraint(equalToConstant: 18).isActive = true
-        box.widthAnchor.constraint(equalToConstant: 1).isActive = true
-        return box
+        let line = FillView(Theme.divider)
+        line.translatesAutoresizingMaskIntoConstraints = false
+        line.heightAnchor.constraint(equalToConstant: 20).isActive = true
+        line.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        let holder = NSView()
+        holder.translatesAutoresizingMaskIntoConstraints = false
+        holder.addSubview(line)
+        NSLayoutConstraint.activate([
+            holder.widthAnchor.constraint(equalToConstant: 13),
+            holder.heightAnchor.constraint(equalToConstant: 20),
+            line.centerXAnchor.constraint(equalTo: holder.centerXAnchor),
+            line.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
+        ])
+        return holder
     }
 
     func update(hasSelection: Bool, singleSelection: Bool, canPaste: Bool, canCreate: Bool) {
@@ -85,30 +100,33 @@ final class CommandBar: NSView {
     }
 }
 
-/// V6 상태 표시줄과 보기 전환 버튼.
+/// V6 상태 표시줄과 보기 전환 버튼. 높이 24, 글자 11 (DESIGN 4장).
 @MainActor
-final class StatusBar: NSView {
+final class StatusBar: FillView {
     var onModeChange: ((ViewMode) -> Void)?
-    private let countLabel = UI.label("", size: NSFont.smallSystemFontSize)
-    private let selectionLabel = UI.label("", size: NSFont.smallSystemFontSize)
-    private let activityLabel = UI.label("", size: NSFont.smallSystemFontSize, color: .secondaryLabelColor)
-    private let modeControl = NSSegmentedControl()
+    private let countLabel = UI.label("", size: Theme.Font.status)
+    private let selectionLabel = UI.label("", size: Theme.Font.status)
+    private let activityLabel = UI.label("", size: Theme.Font.status, color: Theme.secondaryText)
+    private let detailsButton = ThemedButton(symbol: Theme.symbol("list.bullet", "자세히", size: 11), tip: "자세히 (⌘1)",
+                                             target: nil, action: nil)
+    private let iconsButton = ThemedButton(symbol: Theme.symbol("square.grid.2x2", "큰 아이콘", size: 11),
+                                           tip: "큰 아이콘 (⌘4)", target: nil, action: nil)
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        modeControl.segmentCount = 2
-        modeControl.setImage(UI.symbol("list.bullet", "자세히"), forSegment: 0)
-        modeControl.setImage(UI.symbol("square.grid.2x2", "큰 아이콘"), forSegment: 1)
-        modeControl.setToolTip("자세히 (⌘1)", forSegment: 0)
-        modeControl.setToolTip("큰 아이콘 (⌘4)", forSegment: 1)
-        modeControl.trackingMode = .selectOne
-        modeControl.segmentStyle = .texturedSquare
-        modeControl.controlSize = .small
-        modeControl.target = self
-        modeControl.action = #selector(modeChanged(_:))
-        modeControl.translatesAutoresizingMaskIntoConstraints = false
+    init() {
+        super.init(Theme.contentBackground)
+        topDivider = true
+        for (button, tag) in [(detailsButton, 0), (iconsButton, 1)] {
+            button.tag = tag
+            button.target = self
+            button.action = #selector(modeChanged(_:))
+            button.fixedSize = NSSize(width: 26, height: 20)
+            button.setAccessibilityRole(.radioButton)
+        }
+        let modeStack = NSStackView(views: [detailsButton, iconsButton])
+        modeStack.spacing = 2
+        modeStack.translatesAutoresizingMaskIntoConstraints = false
 
-        for view in [countLabel, selectionLabel, activityLabel, modeControl] as [NSView] { addSubview(view) }
+        for view in [countLabel, selectionLabel, activityLabel, modeStack] as [NSView] { addSubview(view) }
         NSLayoutConstraint.activate([
             countLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             countLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -116,9 +134,9 @@ final class StatusBar: NSView {
             selectionLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             activityLabel.leadingAnchor.constraint(equalTo: selectionLabel.trailingAnchor, constant: 24),
             activityLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            activityLabel.trailingAnchor.constraint(lessThanOrEqualTo: modeControl.leadingAnchor, constant: -12),
-            modeControl.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            modeControl.centerYAnchor.constraint(equalTo: centerYAnchor),
+            activityLabel.trailingAnchor.constraint(lessThanOrEqualTo: modeStack.leadingAnchor, constant: -12),
+            modeStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            modeStack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
@@ -138,10 +156,13 @@ final class StatusBar: NSView {
     }
 
     func setMode(_ mode: ViewMode) {
-        modeControl.selectedSegment = mode == .details ? 0 : (mode == .largeIcons ? 1 : -1)
+        detailsButton.isToggled = mode == .details
+        iconsButton.isToggled = mode == .largeIcons
+        detailsButton.setAccessibilityValue(mode == .details)
+        iconsButton.setAccessibilityValue(mode == .largeIcons)
     }
 
-    @objc private func modeChanged(_ sender: NSSegmentedControl) {
-        onModeChange?(sender.selectedSegment == 0 ? .details : .largeIcons)
+    @objc private func modeChanged(_ sender: NSButton) {
+        onModeChange?(sender.tag == 0 ? .details : .largeIcons)
     }
 }
