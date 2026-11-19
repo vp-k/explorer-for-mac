@@ -16,6 +16,7 @@ public enum FileOperationError: LocalizedError, Equatable {
     case destinationInsideSource(String)
     case destinationContainsSource(String)
     case notFound(String)
+    case cancelled
     /// 영구 삭제가 일부 완료된 뒤 실패했다. deleted 는 삭제가 완료된 최상위 항목들이다.
     case partialDeletion(deleted: [URL], failed: URL, reason: String)
     case failed(String)
@@ -26,6 +27,7 @@ public enum FileOperationError: LocalizedError, Equatable {
         case .destinationInsideSource(let s): return "대상 폴더가 원본 폴더 안에 있습니다: \(s)"
         case .destinationContainsSource(let s): return "대상 항목이 원본을 포함하고 있습니다: \(s)"
         case .notFound(let s): return "항목을 찾을 수 없습니다: \(s)"
+        case .cancelled: return "파일 작업이 취소되었습니다."
         case .partialDeletion(let deleted, let failed, let reason):
             return "영구 삭제 실패: \(failed.path)\n\(reason)\n삭제 완료:\n\(deleted.map(\.path).joined(separator: "\n"))"
         case .failed(let s): return s
@@ -69,7 +71,13 @@ public enum FileOperations {
     /// 폴더끼리는 재귀 병합하고 파일/패키지 충돌마다 정책을 선택한다.
     /// 같은 폴더 복사와 배치 내 파일 이름 충돌은 질문 없이 복사본을 만든다. 같은 이름 폴더는 모두 병합한다.
     public static func copy(_ sources: [URL], to destination: URL, conflict: (URL) -> ConflictPolicy) throws -> OperationResult {
-        try transfer(sources, to: destination, moving: false, conflict: conflict)
+        try copy(sources, to: destination, conflict: conflict, progress: nil)
+    }
+
+    /// 진행률/취소 지원 복사. 취소 시 이번 배치 전체를 롤백한 뒤 cancelled 를 던진다.
+    public static func copy(_ sources: [URL], to destination: URL, conflict: (URL) -> ConflictPolicy,
+                            progress: OperationProgress?) throws -> OperationResult {
+        try transfer(sources, to: destination, moving: false, conflict: conflict, progress: progress)
     }
     /// 같은 폴더로 이동은 아무 것도 하지 않는다. 폴더를 자기 하위로 옮기면 destinationInsideSource.
     public static func move(_ sources: [URL], to destination: URL, conflict: ConflictPolicy) throws -> OperationResult {
@@ -79,7 +87,13 @@ public enum FileOperations {
     /// 폴더끼리는 재귀 병합하고 파일/패키지 충돌마다 정책을 선택한다.
     /// 배치 안에서 이미 사용한 파일 이름은 질문 없이 둘 다 유지한다. 같은 이름 폴더는 모두 병합한다.
     public static func move(_ sources: [URL], to destination: URL, conflict: (URL) -> ConflictPolicy) throws -> OperationResult {
-        try transfer(sources, to: destination, moving: true, conflict: conflict)
+        try move(sources, to: destination, conflict: conflict, progress: nil)
+    }
+
+    /// 진행률/취소 지원 이동. 같은 볼륨에서는 이름 변경 후 항목 단위로 보고한다.
+    public static func move(_ sources: [URL], to destination: URL, conflict: (URL) -> ConflictPolicy,
+                            progress: OperationProgress?) throws -> OperationResult {
+        try transfer(sources, to: destination, moving: true, conflict: conflict, progress: progress)
     }
 
     /// 볼륨 정보를 읽을 수 없으면 false. 존재하지 않는 경로는 가장 가까운 상위 항목으로 비교한다.
@@ -89,17 +103,23 @@ public enum FileOperations {
     }
     /// 휴지통으로 이동 (FileManager.trashItem).
     public static func trash(_ urls: [URL]) throws -> OperationResult {
+        try trash(urls, progress: nil)
+    }
+
+    /// 진행률/취소 지원 휴지통 이동. 취소 시 완료한 항목도 원래 위치로 복원한다.
+    public static func trash(_ urls: [URL], progress: OperationProgress?) throws -> OperationResult {
+        if progress?.isCancelled == true { throw FileOperationError.cancelled }
         for url in urls { try requireItem(url) }
+        let session = try progress.map { try OperationProgressSession($0, sources: urls) }
         var pairs: [MovePair] = []
         do {
             for url in urls {
-                var result: NSURL?
-                try manager.trashItem(at: url, resultingItemURL: &result)
-                guard let target = result as URL? else {
-                    throw FileOperationError.failed("휴지통 위치를 확인할 수 없습니다: \(url.path)")
-                }
+                try session?.begin(url)
+                let target = try trashItemURL(url)
                 pairs.append(MovePair(from: url, to: target))
+                try session?.complete(url)
             }
+            try session?.finish()
         } catch {
             try rollbackMoves(pairs, after: error)
         }
@@ -162,7 +182,7 @@ public enum FileOperations {
         availableName(name, in: directory, isDirectory: hasWholeDirectoryName(directory.appendingPathComponent(name)))
     }
     /// 선택 항목을 ZIP 최상위에 압축한다. 첫 항목의 이름으로 ZIP 이름을 정하며 macOS 메타데이터는 제외한다.
-    /// ditto 는 UTF-8 이름 플래그를 설정하지 않아 Windows 에서 비 ASCII 이름 호환성은 보장하지 않는다.
+    /// 비 ASCII 엔트리는 로컬/중앙 헤더의 UTF-8 플래그를 모두 설정한다.
     public static func compress(_ urls: [URL], in directory: URL) throws -> OperationResult {
         guard let first = urls.first else { throw FileOperationError.failed("압축할 항목이 없습니다.") }
         try requireDirectory(directory)
@@ -188,6 +208,7 @@ public enum FileOperations {
             arguments += [contents.path, output.path]
         }
         try runDitto(arguments)
+        try ZIPFilenameEncoding.markUTF8(in: output)
         try manager.moveItem(at: output, to: archive)
         return OperationResult(record: .created(archive), resultURLs: [archive], skipped: [])
     }
@@ -458,6 +479,7 @@ public enum FileOperations {
         let sources: [URL]
         var backupExclusions: [URL]
         let trashItem: (URL) throws -> URL
+        let progress: OperationProgressSession?
         var records: [FileOperationRecord] = []
         var skipped: [URL] = []
         var rollback: [() throws -> Void] = []
@@ -480,21 +502,26 @@ public enum FileOperations {
             return !names.insert(info.caseSensitive ? path : path.lowercased()).inserted
         }
 
-        init(sources: [URL], backupExclusions: [URL], trashItem: @escaping (URL) throws -> URL) {
+        init(sources: [URL], backupExclusions: [URL], trashItem: @escaping (URL) throws -> URL,
+             progress: OperationProgressSession?) {
             self.sources = sources
             self.backupExclusions = backupExclusions
             self.trashItem = trashItem
+            self.progress = progress
         }
     }
 
     /// Every completed step has an inverse, including displaced items and merged source directories.
     static func transfer(_ sources: [URL], to destination: URL, moving: Bool,
                          conflict: (URL) -> ConflictPolicy,
-                         trashItem: @escaping (URL) throws -> URL = trashItemURL) throws -> OperationResult {
+                         trashItem: @escaping (URL) throws -> URL = trashItemURL,
+                         progress: OperationProgress? = nil) throws -> OperationResult {
+        if progress?.isCancelled == true { throw FileOperationError.cancelled }
         try requireDirectory(destination)
         var sameParents: [URL: Bool] = [:]
         var sourceRelationships: PathRelationships?
         for source in sources {
+            if progress?.isCancelled == true { throw FileOperationError.cancelled }
             try requireItem(source)
             try rejectDescendant(destination, of: source)
             // Same-parent copies choose a fresh name; same-parent moves leave the item in place.
@@ -514,13 +541,18 @@ public enum FileOperations {
                 }
             }
         }
-        var state = TransferState(sources: sources, backupExclusions: sources, trashItem: trashItem)
+        let session = try progress.map { try OperationProgressSession($0, sources: sources) }
+        var state = TransferState(sources: sources, backupExclusions: sources, trashItem: trashItem, progress: session)
         var urls: [URL] = []
         var locations = ResultLocations()
         do {
             for source in sources {
                 let sameParent = sameParents[source.deletingLastPathComponent()] == true
-                if moving && sameParent { state.skipped.append(source); continue }
+                if moving && sameParent {
+                    state.skipped.append(source)
+                    try session?.complete(source)
+                    continue
+                }
                 let wholeName = hasWholeDirectoryName(source)
                 var target = destination.appendingPathComponent(source.lastPathComponent)
                 if !moving && sameParent {
@@ -534,6 +566,7 @@ public enum FileOperations {
                     urls.append(completed)
                 }
             }
+            try session?.finish()
         } catch {
             try rollBack(state.rollback, after: error)
         }
@@ -542,6 +575,7 @@ public enum FileOperations {
 
     private static func transferItem(_ source: URL, to proposed: URL, moving: Bool,
                                      conflict: (URL) -> ConflictPolicy, state: inout TransferState) throws -> URL? {
+        try state.progress?.begin(source)
         var target = proposed
         state.backupExclusions.append(target)
         let duplicate = state.reserve(target)
@@ -550,6 +584,7 @@ public enum FileOperations {
             if source.lastPathComponent == ".DS_Store", target.lastPathComponent == ".DS_Store",
                !isDirectoryItem(source), !isDirectoryItem(target), !sameLocation(source, target) {
                 if moving { try displaceToTrash(source, state: &state) }
+                try state.progress?.complete(source)
                 return nil
             }
             let selectedSource = state.sources.contains { sameLocation($0, target) }
@@ -563,8 +598,13 @@ public enum FileOperations {
                 sameLocation($0, target) || (isDirectoryItem($0) && contains(target, in: $0))
             }
             let keepBoth = selectedSource || duplicate || alreadyWritten
-            switch keepBoth ? .keepBoth : conflict(target) {
-            case .skip: state.skipped.append(source); return nil
+            let policy = keepBoth ? .keepBoth : conflict(target)
+            try state.progress?.checkCancellation()
+            switch policy {
+            case .skip:
+                state.skipped.append(source)
+                try state.progress?.complete(source)
+                return nil
             case .keepBoth:
                 target = target.deletingLastPathComponent().appendingPathComponent(
                     availableName(target.lastPathComponent, in: target.deletingLastPathComponent(),
@@ -575,6 +615,7 @@ public enum FileOperations {
             }
         }
         state.backupExclusions.append(target)
+        try state.progress?.checkCancellation()
         try transferUnoccupiedItem(source, to: target, moving: moving, state: &state)
         _ = state.reserve(target)
         state.writtenItems.append(target)
@@ -590,12 +631,14 @@ public enum FileOperations {
                                  conflict: conflict, state: &state)
         }
         if moving, try manager.contentsOfDirectory(atPath: source.path).isEmpty {
+            try state.progress?.checkCancellation()
             // Preserve the empty container so undo restores its metadata before restoring children.
             try displaceToTrash(source, state: &state)
         }
     }
 
     private static func displaceToTrash(_ url: URL, state: inout TransferState) throws {
+        try state.progress?.checkCancellation()
         let pair = try preserveForUndo(url, excluding: state.backupExclusions, trashItem: state.trashItem)
         state.records.append(.trashed(pairs: [pair]))
         state.rollback.append { try manager.moveItem(at: pair.to, to: pair.from) }
@@ -687,17 +730,25 @@ public enum FileOperations {
 
     private static func transferUnoccupiedItem(_ source: URL, to target: URL, moving: Bool,
                                               state: inout TransferState) throws {
-        if moving {
+        if moving && (state.progress?.isSameVolume(source, toDirectory: target.deletingLastPathComponent()) ?? true) {
             try manager.moveItem(at: source, to: target)
             state.records.append(.moved(pairs: [MovePair(from: source, to: target)]))
             state.rollback.append { try manager.moveItem(at: target, to: source) }
+            try state.progress?.complete(source)
         } else {
             let staging = target.deletingLastPathComponent().appendingPathComponent(".explorer-copy-\(UUID().uuidString)")
             defer { try? manager.removeItem(at: staging) }
-            try manager.copyItem(at: source, to: staging)
+            if let progress = state.progress { try progress.copy(source, to: staging) }
+            else { try manager.copyItem(at: source, to: staging) }
+            try state.progress?.checkCancellation()
             try manager.moveItem(at: staging, to: target)
             state.records.append(.copied(created: [target]))
             state.rollback.append { try manager.removeItem(at: target) }
+            if moving {
+                // Cross-volume moves retain the original in a reversible same-volume backup.
+                try displaceToTrash(source, state: &state)
+            }
+            try state.progress?.checkCancellation()
         }
     }
 
