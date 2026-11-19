@@ -214,10 +214,11 @@ public final class PinnedFolderStore: @unchecked Sendable {
             }
         } else {
             let home = FileManager.default.homeDirectoryForCurrentUser
-            storedFolders = ["Desktop", "Downloads", "Documents", "Pictures"].map { home.appendingPathComponent($0, isDirectory: true) }
+            storedFolders = [URL(fileURLWithPath: "/Applications", isDirectory: true)]
+                + ["Desktop", "Downloads", "Documents", "Pictures"].map { home.appendingPathComponent($0, isDirectory: true) }
         }
     }
-    /// 저장 파일이 없으면 기본값: 바탕 화면, 다운로드, 문서, 사진.
+    /// 저장 파일이 없으면 기본값: 응용 프로그램, 바탕 화면, 다운로드, 문서, 사진.
     public var folders: [URL] { lock.withLock { storedFolders } }
     public func pin(_ url: URL) {
         guard url.isFileURL else { return }

@@ -140,6 +140,7 @@ enum FolderIcon {
     static func glyph(for url: URL) -> String? {
         let key = Location.key(url)
         if key == Location.key(Location.home) { return "house.fill" }
+        if key == Location.key(URL(fileURLWithPath: "/Applications")) { return "square.grid.2x2.fill" }
         let map: [(FileManager.SearchPathDirectory, String)] = [
             (.desktopDirectory, "menubar.dock.rectangle"), (.documentDirectory, "doc.text.fill"),
             (.downloadsDirectory, "arrow.down"), (.picturesDirectory, "photo.fill"),

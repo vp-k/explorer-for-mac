@@ -13,7 +13,8 @@ final class PinnedFolderStoreTests: TemporaryDirectoryTestCase {
 
     func testMissingOrCorruptFileUsesDefaultFolders() throws {
         let home = manager.homeDirectoryForCurrentUser
-        let expected = ["Desktop", "Downloads", "Documents", "Pictures"].map { home.appendingPathComponent($0).path }
+        let expected = ["/Applications"]
+            + ["Desktop", "Downloads", "Documents", "Pictures"].map { home.appendingPathComponent($0).path }
         XCTAssertEqual(PinnedFolderStore(storageURL: storage).folders.map(\.path), expected)
         try file("settings/pins.json", "broken JSON")
         XCTAssertEqual(PinnedFolderStore(storageURL: storage).folders.map(\.path), expected)
