@@ -16,17 +16,18 @@ enum Location {
 
     static var trash: URL? { standard(.trashDirectory) }
 
-    /// 내 Mac 화면과 이동 메뉴에 보이는 표준 폴더.
+    /// 내 Mac 화면과 이동 메뉴에 보이는 표준 폴더. 이름은 Finder 와 같은 시스템 표시 이름이다.
     static var standardFolders: [(title: String, url: URL)] {
-        let dirs: [(String, FileManager.SearchPathDirectory)] = [
-            (L("바탕 화면"), .desktopDirectory), (L("문서"), .documentDirectory),
-            (L("다운로드"), .downloadsDirectory), (L("사진"), .picturesDirectory),
-            (L("음악"), .musicDirectory), (L("동영상"), .moviesDirectory),
+        let dirs: [FileManager.SearchPathDirectory] = [
+            .desktopDirectory, .documentDirectory, .downloadsDirectory,
+            .picturesDirectory, .musicDirectory, .moviesDirectory,
         ]
-        var result = dirs.compactMap { title, dir in standard(dir).map { (title, $0) } }
-        result.append((L("홈"), home))
-        return result
+        var urls = [applications]
+        urls += dirs.compactMap { standard($0) }
+        return urls.map { (FileManager.default.displayName(atPath: $0.path), $0) } + [(L("홈"), home)]
     }
+
+    static let applications = URL(fileURLWithPath: "/Applications", isDirectory: true)
 
     /// 경로 비교용 키. 디렉터리 URL 의 끝 "/" 차이를 없앤다.
     static func key(_ url: URL) -> String { url.standardizedFileURL.path }

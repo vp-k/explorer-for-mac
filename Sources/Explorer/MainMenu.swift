@@ -142,12 +142,14 @@ enum MainMenu {
         menu.addItem(.separator())
         add(menu, L("내 Mac"), #selector(B.goToFolder(_:)), "c", [.command, .option], rep: Location.thisMac)
         add(menu, L("홈"), #selector(B.goToFolder(_:)), "h", [.command, .shift], rep: Location.home)
-        let keys: [String: (String, NSEvent.ModifierFlags)] = [
-            L("바탕 화면"): ("d", [.command, .shift]), L("문서"): ("o", [.command, .shift]),
-            L("다운로드"): ("l", [.command, .option]),
-        ]
-        for folder in Location.standardFolders where folder.title != L("홈") {
-            let shortcut = keys[folder.title]
+        // Finder 와 같은 단축키.
+        var keys: [String: (String, NSEvent.ModifierFlags)] = [Location.key(Location.applications): ("a", [.command, .shift])]
+        for (dir, shortcut) in [(FileManager.SearchPathDirectory.desktopDirectory, ("d", NSEvent.ModifierFlags([.command, .shift]))),
+                                (.documentDirectory, ("o", [.command, .shift])), (.downloadsDirectory, ("l", [.command, .option]))] {
+            if let url = Location.standard(dir) { keys[Location.key(url)] = shortcut }
+        }
+        for folder in Location.standardFolders where !Location.same(folder.url, Location.home) {
+            let shortcut = keys[Location.key(folder.url)]
             add(menu, folder.title, #selector(B.goToFolder(_:)), shortcut?.0 ?? "", shortcut?.1 ?? [], rep: folder.url)
         }
         if let trash = Location.trash {

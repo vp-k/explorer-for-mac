@@ -215,10 +215,10 @@ public final class PinnedFolderStore: @unchecked Sendable {
         } else {
             let home = FileManager.default.homeDirectoryForCurrentUser
             storedFolders = [URL(fileURLWithPath: "/Applications", isDirectory: true)]
-                + ["Desktop", "Downloads", "Documents", "Pictures"].map { home.appendingPathComponent($0, isDirectory: true) }
+                + ["Desktop", "Documents", "Downloads"].map { home.appendingPathComponent($0, isDirectory: true) }
         }
     }
-    /// 저장 파일이 없으면 기본값: 응용 프로그램, 바탕 화면, 다운로드, 문서, 사진.
+    /// 저장 파일이 없으면 기본값은 Finder 사이드바와 같다: 응용 프로그램, 데스크탑, 문서, 다운로드.
     public var folders: [URL] { lock.withLock { storedFolders } }
     public func pin(_ url: URL) {
         guard url.isFileURL else { return }
