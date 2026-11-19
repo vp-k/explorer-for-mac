@@ -2,6 +2,7 @@
 # swift build -c release 후 build/Explorer.app 번들을 만들고 ad-hoc 서명한다.
 # CONFIG=debug 로 실행하면 디버그 빌드로 번들을 만든다 (스냅숏·하네스 확인용).
 # release 는 Apple Silicon 과 Intel 을 함께 담은 유니버설 바이너리다.
+# SIGN_IDENTITY="Developer ID Application: ..." 를 주면 그 인증서와 hardened runtime 으로 서명한다 (공증용).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,8 +32,13 @@ done
 printf 'APPL????' > "$CONTENTS/PkgInfo"
 plutil -lint "$CONTENTS/Info.plist" >/dev/null
 
-echo "==> ad-hoc 서명"
-codesign --force --sign - --timestamp=none "$APP"
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+    echo "==> 서명: $SIGN_IDENTITY"
+    codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp "$APP"
+else
+    echo "==> ad-hoc 서명"
+    codesign --force --sign - --timestamp=none "$APP"
+fi
 codesign --verify --strict "$APP"
 
 echo "==> 완료: $APP"
