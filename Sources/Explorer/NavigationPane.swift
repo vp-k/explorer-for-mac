@@ -88,7 +88,10 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
         outline.intercellSpacing = NSSize(width: 0, height: 0)
         outline.floatsGroupRows = false
         outline.indentationPerLevel = Theme.Metric.navIndent
-        outline.autoresizesOutlineColumn = true
+        // 열은 탐색 창 폭을 그대로 채운다. 자동 맞춤을 켜면 항목을 다시 읽을 때 열이 좁아져 이름이 잘린다.
+        outline.autoresizesOutlineColumn = false
+        outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+        column.resizingMask = .autoresizingMask
         outline.dataSource = self
         outline.delegate = self
         outline.pane = self
@@ -117,18 +120,21 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
         outline.reloadData()
         outline.expandItem(quickAccess)
         outline.expandItem(thisMac)
+        outline.sizeLastColumnToFit()
     }
 
     func reloadPins() {
         quickAccess.children = pinnedNodes()
         outline.reloadItem(quickAccess, reloadChildren: true)
         outline.expandItem(quickAccess)
+        outline.sizeLastColumnToFit()
     }
 
     func reloadVolumes() {
         thisMac.children = volumeNodes()
         outline.reloadItem(thisMac, reloadChildren: true)
         outline.expandItem(thisMac)
+        outline.sizeLastColumnToFit()
     }
 
     private func pinnedNodes() -> [NavNode] {

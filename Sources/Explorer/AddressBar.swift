@@ -31,6 +31,7 @@ final class AddressBar: NSView, NSTextFieldDelegate {
         crumbStack.spacing = 0
         crumbStack.detachesHiddenViews = true
         crumbStack.translatesAutoresizingMaskIntoConstraints = false
+        // 창 크기를 밀어내지 않는다. 자리가 모자라면 조각을 겹치지 않고 앞쪽 조각부터 숨긴다 (visibility priority).
         crumbStack.setClippingResistancePriority(.defaultLow, for: .horizontal)
         addSubview(crumbStack)
 
@@ -91,7 +92,9 @@ final class AddressBar: NSView, NSTextFieldDelegate {
             button.horizontalPadding = 6
             button.tag = index
             button.lineBreakMode = .byTruncatingMiddle
-            button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            // 마지막 조각만 줄어들 수 있다. 나머지는 줄지 않고 통째로 숨는다.
+            let isLast = index == crumbs.count - 1
+            button.setContentCompressionResistancePriority(isLast ? .defaultLow : .defaultHigh, for: .horizontal)
             button.toolTip = crumb.url.path
             crumbStack.addArrangedSubview(button)
 
