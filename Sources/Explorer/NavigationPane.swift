@@ -354,6 +354,13 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
 
     func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo,
                      proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
+        // 빠른 액세스 머리글이나 고정 항목 사이에 폴더를 놓으면 고정한다 (Windows 와 같음).
+        if (item as? NavNode) === quickAccess {
+            guard !Self.folders(in: info).isEmpty else { return [] }
+            let position = index == NSOutlineViewDropOnItemIndex ? quickAccess.children?.count ?? 0 : index
+            outlineView.setDropItem(quickAccess, dropChildIndex: position)
+            return .link
+        }
         guard let node = item as? NavNode, index == NSOutlineViewDropOnItemIndex,
               let url = node.url, !Location.isThisMac(url) else { return [] }
         if node.kind == .trash { return .move }
@@ -362,6 +369,12 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
 
     func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo,
                      item: Any?, childIndex index: Int) -> Bool {
+        if (item as? NavNode) === quickAccess {
+            let folders = Self.folders(in: info)
+            guard !folders.isEmpty else { return false }
+            AppState.shared.pin(folders, at: index)
+            return true
+        }
         guard let node = item as? NavNode, let url = node.url else { return false }
         let urls = DragPolicy.fileURLs(from: info.draggingPasteboard)
         if node.kind == .trash {
@@ -372,6 +385,11 @@ final class NavigationPane: NSView, NSOutlineViewDataSource, NSOutlineViewDelega
         let operation = DragPolicy.operation(for: info, urls: urls, destination: url)
         guard !operation.isEmpty else { return false }
         return onDrop?(urls, url, operation) ?? false
+    }
+
+    /// 끌어 온 항목 중 열 수 있는 폴더. 패키지(.app)와 파일은 고정하지 않는다.
+    private static func folders(in info: NSDraggingInfo) -> [URL] {
+        DragPolicy.fileURLs(from: info.draggingPasteboard).filter { (try? FileItem.load($0))?.isNavigable == true }
     }
 
     // MARK: 우클릭, 가운데 클릭 (N7, N8)

@@ -129,6 +129,23 @@ final class AppState {
         post(Self.pinsChanged)
     }
 
+    /// 폴더를 빠른 액세스의 position 자리에 고정한다. 이미 고정된 폴더는 그 자리로 옮긴다.
+    func pin(_ urls: [URL], at position: Int) {
+        var target = max(0, position)
+        for url in urls {
+            if let from = pins.folders.firstIndex(where: { Location.same($0, url) }) {
+                // 앞에서 빼면 뒤쪽 자리가 하나씩 당겨진다.
+                if from < target { target -= 1 }
+                pins.move(from: from, to: min(target, pins.folders.count - 1))
+            } else {
+                pins.pin(url)
+                pins.move(from: pins.folders.count - 1, to: min(target, pins.folders.count - 1))
+            }
+            target += 1
+        }
+        post(Self.pinsChanged)
+    }
+
     func post(_ name: Notification.Name, userInfo: [AnyHashable: Any]? = nil) {
         NotificationCenter.default.post(name: name, object: nil, userInfo: userInfo)
     }

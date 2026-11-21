@@ -331,8 +331,10 @@ extension BrowserViewController {
     // MARK: 기타 (N7, F13, F14, F15)
 
     @objc func togglePin(_ sender: Any?) {
+        // 선택한 폴더가 없으면 지금 폴더를 고정한다 (Windows 명령 모음과 같음).
         let url = ((sender as? NSMenuItem)?.representedObject as? URL)
             ?? fileList.selectedItems.first(where: \.isNavigable)?.url
+            ?? (isThisMac ? nil : currentURL)
         guard let url else { return }
         state.togglePin(url)
     }
@@ -482,7 +484,7 @@ extension BrowserViewController: NSMenuItemValidation {
         case #selector(goUp(_:)): return canGoUp
         case #selector(openSelection(_:)): return !selected.isEmpty
         case #selector(openInNewTab(_:)):
-            return menuItem.representedObject is URL || selected.contains(where: \.isNavigable)
+            return menuItem.representedObject is URL || selected.contains(where: \.isNavigable) || !isThisMac
         case #selector(cut(_:)), #selector(copy(_:)), #selector(moveToTrash(_:)), #selector(duplicateSelection(_:)),
              #selector(deletePermanently(_:)), #selector(compressSelection(_:)):
             return hasSelection
@@ -497,7 +499,7 @@ extension BrowserViewController: NSMenuItemValidation {
         case #selector(undo(_:)): return textUndoManager.map(\.canUndo) ?? !state.undoStack.isEmpty
         case #selector(redo(_:)): return textUndoManager.map(\.canRedo) ?? !state.redoStack.isEmpty
         case #selector(togglePin(_:)):
-            return menuItem.representedObject is URL || selected.contains(where: \.isNavigable)
+            return menuItem.representedObject is URL || selected.contains(where: \.isNavigable) || !isThisMac
         case #selector(setViewModeFromMenu(_:)):
             menuItem.state = menuItem.tag == viewMode.rawValue ? .on : .off
         case #selector(setSortKeyFromMenu(_:)):
